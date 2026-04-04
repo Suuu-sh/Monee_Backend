@@ -1,0 +1,20 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: monee-backend:latest
+    container_name: monee-backend
+    environment:
+      APP_ENV: production
+      PORT: 8080
+      DATABASE_PATH: /data/monee.db
+      SEED_DEMO_DATA: "true"
+    ports:
+      - "${HOST_PORT:-18080}:8080"
+    volumes:
+      - backend_data:/data
+    restart: unless-stopped
+
+volumes:
+  backend_data:
