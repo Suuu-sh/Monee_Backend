@@ -1,6 +1,7 @@
 package http
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -56,5 +57,28 @@ func TestListSeededCategories(t *testing.T) {
 	items, ok := payload["items"].([]any)
 	if !ok || len(items) == 0 {
 		t.Fatalf("expected seeded categories, got %s", string(body))
+	}
+}
+
+func TestCreateCategoryWithProvidedID(t *testing.T) {
+	router := NewRouter(config.Config{AppEnv: "test", Port: "8080", DatabasePath: "file::memory:?cache=shared", SeedDemoData: false}, testDB(t), slog.Default())
+
+	body := bytes.NewBufferString(`{"id":"11111111-1111-1111-1111-111111111111","slug":"groceries","name":"Groceries","type":"expense","icon":"cart.fill","color_token":"mint","order":99}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/categories", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload["id"] != "11111111-1111-1111-1111-111111111111" {
+		t.Fatalf("expected custom id to be preserved, got %#v", payload["id"])
 	}
 }

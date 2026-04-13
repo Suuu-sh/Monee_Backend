@@ -28,6 +28,13 @@ docker compose up --build -d
 
 `docker compose` はデフォルトで `http://127.0.0.1:18080` に公開します。必要なら `.env` の `HOST_PORT` で変更できます。
 
+## Mobile app integration
+
+- iOS シミュレータからは `http://127.0.0.1:18080` をそのまま利用できます
+- 実機からは Mac のローカルネットワーク IP を `Backend URL` に設定してください
+- Monee アプリの `Settings > Backend sync` から接続確認、取り込み、書き出しを行えます
+- 同期対象は categories / transactions / budgets / savings goals です
+
 ## API examples
 ```bash
 curl http://127.0.0.1:18080/healthz

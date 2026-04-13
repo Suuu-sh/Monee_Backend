@@ -112,13 +112,14 @@ func (s *Server) listCategories(c *gin.Context) {
 }
 
 type categoryPayload struct {
-	Slug       string `json:"slug" binding:"required"`
-	Name       string `json:"name" binding:"required"`
-	Type       string `json:"type" binding:"required,oneof=expense income"`
-	Icon       string `json:"icon" binding:"required"`
-	ColorToken string `json:"color_token" binding:"required"`
-	Order      int    `json:"order"`
-	IsActive   *bool  `json:"is_active"`
+	ID         *string `json:"id"`
+	Slug       string  `json:"slug" binding:"required"`
+	Name       string  `json:"name" binding:"required"`
+	Type       string  `json:"type" binding:"required,oneof=expense income"`
+	Icon       string  `json:"icon" binding:"required"`
+	ColorToken string  `json:"color_token" binding:"required"`
+	Order      int     `json:"order"`
+	IsActive   *bool   `json:"is_active"`
 }
 
 func (s *Server) createCategory(c *gin.Context) {
@@ -126,7 +127,16 @@ func (s *Server) createCategory(c *gin.Context) {
 	if !bindJSON(c, &payload) {
 		return
 	}
-	item := models.Category{Slug: payload.Slug, Name: payload.Name, Type: payload.Type, Icon: payload.Icon, ColorToken: payload.ColorToken, Order: payload.Order, IsActive: boolValue(payload.IsActive, true)}
+	item := models.Category{
+		ID:         stringValue(payload.ID),
+		Slug:       payload.Slug,
+		Name:       payload.Name,
+		Type:       payload.Type,
+		Icon:       payload.Icon,
+		ColorToken: payload.ColorToken,
+		Order:      payload.Order,
+		IsActive:   boolValue(payload.IsActive, true),
+	}
 	if err := s.db.Create(&item).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_create_category", err)
 		return
@@ -167,15 +177,16 @@ func (s *Server) deleteCategory(c *gin.Context) {
 }
 
 type transactionPayload struct {
-	Title                   string     `json:"title" binding:"required"`
-	Amount                  float64    `json:"amount" binding:"required"`
-	Type                    string     `json:"type" binding:"required,oneof=expense income"`
-	Date                    time.Time  `json:"date" binding:"required"`
-	Note                    *string    `json:"note"`
-	MerchantName            *string    `json:"merchant_name"`
-	CategoryID              *string    `json:"category_id"`
-	IsSubscriptionCandidate *bool      `json:"is_subscription_candidate"`
-	RecurrenceHint          *string    `json:"recurrence_hint"`
+	ID                      *string   `json:"id"`
+	Title                   string    `json:"title" binding:"required"`
+	Amount                  float64   `json:"amount" binding:"required"`
+	Type                    string    `json:"type" binding:"required,oneof=expense income"`
+	Date                    time.Time `json:"date" binding:"required"`
+	Note                    *string   `json:"note"`
+	MerchantName            *string   `json:"merchant_name"`
+	CategoryID              *string   `json:"category_id"`
+	IsSubscriptionCandidate *bool     `json:"is_subscription_candidate"`
+	RecurrenceHint          *string   `json:"recurrence_hint"`
 }
 
 func (s *Server) listTransactions(c *gin.Context) {
@@ -203,6 +214,7 @@ func (s *Server) createTransaction(c *gin.Context) {
 		return
 	}
 	item := models.Transaction{
+		ID:                      stringValue(payload.ID),
 		Title:                   payload.Title,
 		Amount:                  payload.Amount,
 		Type:                    payload.Type,
@@ -263,6 +275,7 @@ func (s *Server) deleteTransaction(c *gin.Context) {
 }
 
 type budgetPayload struct {
+	ID           *string `json:"id"`
 	Name         string  `json:"name" binding:"required"`
 	Scope        string  `json:"scope" binding:"required,oneof=overall category"`
 	MonthlyLimit float64 `json:"monthly_limit" binding:"required"`
@@ -284,7 +297,14 @@ func (s *Server) createBudget(c *gin.Context) {
 	if !bindJSON(c, &payload) {
 		return
 	}
-	item := models.Budget{Name: payload.Name, Scope: payload.Scope, MonthlyLimit: payload.MonthlyLimit, CategoryID: payload.CategoryID, IsActive: boolValue(payload.IsActive, true)}
+	item := models.Budget{
+		ID:           stringValue(payload.ID),
+		Name:         payload.Name,
+		Scope:        payload.Scope,
+		MonthlyLimit: payload.MonthlyLimit,
+		CategoryID:   payload.CategoryID,
+		IsActive:     boolValue(payload.IsActive, true),
+	}
 	if err := s.db.Create(&item).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_create_budget", err)
 		return
@@ -331,6 +351,7 @@ func (s *Server) deleteBudget(c *gin.Context) {
 }
 
 type savingsGoalPayload struct {
+	ID           *string    `json:"id"`
 	Name         string     `json:"name" binding:"required"`
 	TargetAmount float64    `json:"target_amount" binding:"required"`
 	SavedAmount  float64    `json:"saved_amount"`
@@ -352,7 +373,14 @@ func (s *Server) createSavingsGoal(c *gin.Context) {
 	if !bindJSON(c, &payload) {
 		return
 	}
-	item := models.SavingsGoal{Name: payload.Name, TargetAmount: payload.TargetAmount, SavedAmount: payload.SavedAmount, TargetDate: payload.TargetDate, IsActive: boolValue(payload.IsActive, true)}
+	item := models.SavingsGoal{
+		ID:           stringValue(payload.ID),
+		Name:         payload.Name,
+		TargetAmount: payload.TargetAmount,
+		SavedAmount:  payload.SavedAmount,
+		TargetDate:   payload.TargetDate,
+		IsActive:     boolValue(payload.IsActive, true),
+	}
 	if err := s.db.Create(&item).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_create_savings_goal", err)
 		return
@@ -408,6 +436,13 @@ func boolValue(value *bool, fallback bool) bool {
 		return *value
 	}
 	return fallback
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value)
 }
 
 func parseInt(raw string, fallback int) int {
