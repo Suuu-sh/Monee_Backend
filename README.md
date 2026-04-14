@@ -23,13 +23,14 @@ Go + Gin で構築した Monee 用の backend API です。
 
 ## Local start
 ```bash
-cp .env.example .env
 make deps
 make test
-docker compose up --build -d
+docker compose --env-file env.local up --build -d
 ```
 
-`docker compose` は PostgreSQL と API を同時に起動し、デフォルトで `http://127.0.0.1:18080` に公開します。必要なら `.env` の `HOST_PORT` で変更できます。PostgreSQL は `127.0.0.1:${POSTGRES_PORT:-15432}` で確認できます。
+開発用の環境変数ファイルは `env.local`、本番用は `env.production` を使います。現時点では `env.production` は空のままで構いません。
+
+`docker compose --env-file env.local` は PostgreSQL と API を同時に起動し、デフォルトで `http://127.0.0.1:18080` に公開します。必要なら `env.local` の `HOST_PORT` で変更できます。PostgreSQL は `127.0.0.1:${POSTGRES_PORT:-15432}` で確認できます。
 
 ## Mobile app integration
 

@@ -27,11 +27,11 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      APP_ENV: production
-      PORT: 8080
-      DATABASE_DRIVER: postgres
+      APP_ENV: ${APP_ENV:-development}
+      PORT: ${PORT:-8080}
+      DATABASE_DRIVER: ${DATABASE_DRIVER:-postgres}
       DATABASE_URL: postgres://${POSTGRES_USER:-monee}:${POSTGRES_PASSWORD:-monee}@postgres:5432/${POSTGRES_DB:-monee}?sslmode=disable
-      SEED_DEFAULT_CATEGORIES: "true"
+      SEED_DEFAULT_CATEGORIES: "${SEED_DEFAULT_CATEGORIES:-true}"
     ports:
       - "${HOST_PORT:-18080}:8080"
     restart: unless-stopped
