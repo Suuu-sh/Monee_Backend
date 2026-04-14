@@ -13,6 +13,7 @@ import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type Server struct {
@@ -47,6 +48,12 @@ func NewRouter(cfg config.Config, db *gorm.DB, logger *slog.Logger) *gin.Engine 
 	api := router.Group("/api/v1")
 	{
 		api.GET("/summary", server.getSummary)
+
+		api.GET("/preferences", server.listPreferences)
+		api.POST("/preferences", server.createPreference)
+		api.PUT("/preferences/:id", server.updatePreference)
+		api.DELETE("/preferences/:id", server.deletePreference)
+
 		api.GET("/categories", server.listCategories)
 		api.POST("/categories", server.createCategory)
 		api.PUT("/categories/:id", server.updateCategory)
@@ -66,6 +73,11 @@ func NewRouter(cfg config.Config, db *gorm.DB, logger *slog.Logger) *gin.Engine 
 		api.POST("/savings-goals", server.createSavingsGoal)
 		api.PUT("/savings-goals/:id", server.updateSavingsGoal)
 		api.DELETE("/savings-goals/:id", server.deleteSavingsGoal)
+
+		api.GET("/subscriptions", server.listSubscriptions)
+		api.POST("/subscriptions", server.createSubscription)
+		api.PUT("/subscriptions/:id", server.updateSubscription)
+		api.DELETE("/subscriptions/:id", server.deleteSubscription)
 	}
 
 	return router
@@ -98,9 +110,127 @@ func (s *Server) getSummary(c *gin.Context) {
 	c.JSON(http.StatusOK, summary)
 }
 
+type appPreferencePayload struct {
+	ID                     *string    `json:"id"`
+	CurrencyCode           string     `json:"currency_code" binding:"required"`
+	MonthStartDay          int        `json:"month_start_day" binding:"required,gte=1,lte=28"`
+	IsAISummariesEnabled   *bool      `json:"is_ai_summaries_enabled"`
+	AppearanceRaw          string     `json:"appearance_raw" binding:"required,oneof=system light dark"`
+	LanguageRaw            *string    `json:"language_raw"`
+	HomeSummaryRangeRaw    *string    `json:"home_summary_range_raw"`
+	BudgetWarningThreshold float64    `json:"budget_warning_threshold" binding:"required"`
+	SeedScenarioRaw        *string    `json:"seed_scenario_raw"`
+	CreatedAt              *time.Time `json:"created_at"`
+	UpdatedAt              *time.Time `json:"updated_at"`
+}
+
+func (s *Server) listPreferences(c *gin.Context) {
+	var items []models.AppPreference
+	if err := s.db.Order("created_at ASC").Find(&items).Error; err != nil {
+		s.respondError(c, http.StatusInternalServerError, "failed_to_list_preferences", err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+func (s *Server) createPreference(c *gin.Context) {
+	var payload appPreferencePayload
+	if !bindJSON(c, &payload) {
+		return
+	}
+
+	item := models.AppPreference{
+		ID:                     stringValue(payload.ID),
+		CurrencyCode:           payload.CurrencyCode,
+		MonthStartDay:          payload.MonthStartDay,
+		IsAISummariesEnabled:   boolValue(payload.IsAISummariesEnabled, true),
+		AppearanceRaw:          payload.AppearanceRaw,
+		LanguageRaw:            payload.LanguageRaw,
+		HomeSummaryRangeRaw:    payload.HomeSummaryRangeRaw,
+		BudgetWarningThreshold: payload.BudgetWarningThreshold,
+		SeedScenarioRaw:        stringValueOr(payload.SeedScenarioRaw, "balanced"),
+		CreatedAt:              timeValue(payload.CreatedAt, time.Now()),
+		UpdatedAt:              timeValue(payload.UpdatedAt, time.Now()),
+	}
+	if err := s.db.Create(&item).Error; err != nil {
+		s.respondError(c, http.StatusBadRequest, "failed_to_create_preference", err)
+		return
+	}
+	if err := s.overrideTimestamps(&item, payload.CreatedAt, payload.UpdatedAt); err != nil {
+		s.respondError(c, http.StatusBadRequest, "failed_to_create_preference", err)
+		return
+	}
+	if err := s.db.First(&item, "id = ?", item.ID).Error; err != nil {
+		s.respondError(c, http.StatusInternalServerError, "failed_to_load_preference", err)
+		return
+	}
+	c.JSON(http.StatusCreated, item)
+}
+
+func (s *Server) updatePreference(c *gin.Context) {
+	var item models.AppPreference
+	if err := s.db.First(&item, "id = ?", c.Param("id")).Error; err != nil {
+		s.respondError(c, http.StatusNotFound, "preference_not_found", err)
+		return
+	}
+
+	var payload appPreferencePayload
+	if !bindJSON(c, &payload) {
+		return
+	}
+
+	item.CurrencyCode = payload.CurrencyCode
+	item.MonthStartDay = payload.MonthStartDay
+	item.IsAISummariesEnabled = boolValue(payload.IsAISummariesEnabled, item.IsAISummariesEnabled)
+	item.AppearanceRaw = payload.AppearanceRaw
+	item.LanguageRaw = payload.LanguageRaw
+	item.HomeSummaryRangeRaw = payload.HomeSummaryRangeRaw
+	item.BudgetWarningThreshold = payload.BudgetWarningThreshold
+	item.SeedScenarioRaw = stringValueOr(payload.SeedScenarioRaw, item.SeedScenarioRaw)
+	item.CreatedAt = timeValue(payload.CreatedAt, item.CreatedAt)
+	item.UpdatedAt = timeValue(payload.UpdatedAt, item.UpdatedAt)
+
+	if err := s.db.Save(&item).Error; err != nil {
+		s.respondError(c, http.StatusBadRequest, "failed_to_update_preference", err)
+		return
+	}
+	if err := s.overrideTimestamps(&item, payload.CreatedAt, payload.UpdatedAt); err != nil {
+		s.respondError(c, http.StatusBadRequest, "failed_to_update_preference", err)
+		return
+	}
+	if err := s.db.First(&item, "id = ?", item.ID).Error; err != nil {
+		s.respondError(c, http.StatusInternalServerError, "failed_to_load_preference", err)
+		return
+	}
+	c.JSON(http.StatusOK, item)
+}
+
+func (s *Server) deletePreference(c *gin.Context) {
+	if err := s.db.Delete(&models.AppPreference{}, "id = ?", c.Param("id")).Error; err != nil {
+		s.respondError(c, http.StatusBadRequest, "failed_to_delete_preference", err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+type categoryPayload struct {
+	ID         *string    `json:"id"`
+	Slug       string     `json:"slug" binding:"required"`
+	Name       string     `json:"name" binding:"required"`
+	Type       string     `json:"type" binding:"required,oneof=expense income"`
+	Icon       string     `json:"icon" binding:"required"`
+	ColorToken string     `json:"color_token" binding:"required"`
+	Order      int        `json:"order"`
+	IsActive   *bool      `json:"is_active"`
+	CreatedAt  *time.Time `json:"created_at"`
+	UpdatedAt  *time.Time `json:"updated_at"`
+}
+
 func (s *Server) listCategories(c *gin.Context) {
 	var categories []models.Category
-	query := s.db.Order("`order` ASC, created_at ASC")
+	query := s.db.
+		Order(clause.OrderByColumn{Column: clause.Column{Name: "order"}}).
+		Order(clause.OrderByColumn{Column: clause.Column{Name: "created_at"}})
 	if categoryType := strings.TrimSpace(c.Query("type")); categoryType != "" {
 		query = query.Where("type = ?", categoryType)
 	}
@@ -109,17 +239,6 @@ func (s *Server) listCategories(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"items": categories})
-}
-
-type categoryPayload struct {
-	ID         *string `json:"id"`
-	Slug       string  `json:"slug" binding:"required"`
-	Name       string  `json:"name" binding:"required"`
-	Type       string  `json:"type" binding:"required,oneof=expense income"`
-	Icon       string  `json:"icon" binding:"required"`
-	ColorToken string  `json:"color_token" binding:"required"`
-	Order      int     `json:"order"`
-	IsActive   *bool   `json:"is_active"`
 }
 
 func (s *Server) createCategory(c *gin.Context) {
@@ -136,9 +255,19 @@ func (s *Server) createCategory(c *gin.Context) {
 		ColorToken: payload.ColorToken,
 		Order:      payload.Order,
 		IsActive:   boolValue(payload.IsActive, true),
+		CreatedAt:  timeValue(payload.CreatedAt, time.Now()),
+		UpdatedAt:  timeValue(payload.UpdatedAt, time.Now()),
 	}
 	if err := s.db.Create(&item).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_create_category", err)
+		return
+	}
+	if err := s.overrideTimestamps(&item, payload.CreatedAt, payload.UpdatedAt); err != nil {
+		s.respondError(c, http.StatusBadRequest, "failed_to_create_category", err)
+		return
+	}
+	if err := s.db.First(&item, "id = ?", item.ID).Error; err != nil {
+		s.respondError(c, http.StatusInternalServerError, "failed_to_load_category", err)
 		return
 	}
 	c.JSON(http.StatusCreated, item)
@@ -161,8 +290,18 @@ func (s *Server) updateCategory(c *gin.Context) {
 	item.ColorToken = payload.ColorToken
 	item.Order = payload.Order
 	item.IsActive = boolValue(payload.IsActive, item.IsActive)
+	item.CreatedAt = timeValue(payload.CreatedAt, item.CreatedAt)
+	item.UpdatedAt = timeValue(payload.UpdatedAt, item.UpdatedAt)
 	if err := s.db.Save(&item).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_update_category", err)
+		return
+	}
+	if err := s.overrideTimestamps(&item, payload.CreatedAt, payload.UpdatedAt); err != nil {
+		s.respondError(c, http.StatusBadRequest, "failed_to_update_category", err)
+		return
+	}
+	if err := s.db.First(&item, "id = ?", item.ID).Error; err != nil {
+		s.respondError(c, http.StatusInternalServerError, "failed_to_load_category", err)
 		return
 	}
 	c.JSON(http.StatusOK, item)
@@ -177,16 +316,18 @@ func (s *Server) deleteCategory(c *gin.Context) {
 }
 
 type transactionPayload struct {
-	ID                      *string   `json:"id"`
-	Title                   string    `json:"title" binding:"required"`
-	Amount                  float64   `json:"amount" binding:"required"`
-	Type                    string    `json:"type" binding:"required,oneof=expense income"`
-	Date                    time.Time `json:"date" binding:"required"`
-	Note                    *string   `json:"note"`
-	MerchantName            *string   `json:"merchant_name"`
-	CategoryID              *string   `json:"category_id"`
-	IsSubscriptionCandidate *bool     `json:"is_subscription_candidate"`
-	RecurrenceHint          *string   `json:"recurrence_hint"`
+	ID                      *string    `json:"id"`
+	Title                   string     `json:"title" binding:"required"`
+	Amount                  float64    `json:"amount" binding:"required"`
+	Type                    string     `json:"type" binding:"required,oneof=expense income"`
+	Date                    time.Time  `json:"date" binding:"required"`
+	Note                    *string    `json:"note"`
+	MerchantName            *string    `json:"merchant_name"`
+	CategoryID              *string    `json:"category_id"`
+	IsSubscriptionCandidate *bool      `json:"is_subscription_candidate"`
+	RecurrenceHint          *string    `json:"recurrence_hint"`
+	CreatedAt               *time.Time `json:"created_at"`
+	UpdatedAt               *time.Time `json:"updated_at"`
 }
 
 func (s *Server) listTransactions(c *gin.Context) {
@@ -224,8 +365,14 @@ func (s *Server) createTransaction(c *gin.Context) {
 		CategoryID:              payload.CategoryID,
 		IsSubscriptionCandidate: boolValue(payload.IsSubscriptionCandidate, false),
 		RecurrenceHint:          payload.RecurrenceHint,
+		CreatedAt:               timeValue(payload.CreatedAt, time.Now()),
+		UpdatedAt:               timeValue(payload.UpdatedAt, time.Now()),
 	}
 	if err := s.db.Create(&item).Error; err != nil {
+		s.respondError(c, http.StatusBadRequest, "failed_to_create_transaction", err)
+		return
+	}
+	if err := s.overrideTimestamps(&item, payload.CreatedAt, payload.UpdatedAt); err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_create_transaction", err)
 		return
 	}
@@ -255,7 +402,13 @@ func (s *Server) updateTransaction(c *gin.Context) {
 	item.CategoryID = payload.CategoryID
 	item.IsSubscriptionCandidate = boolValue(payload.IsSubscriptionCandidate, item.IsSubscriptionCandidate)
 	item.RecurrenceHint = payload.RecurrenceHint
+	item.CreatedAt = timeValue(payload.CreatedAt, item.CreatedAt)
+	item.UpdatedAt = timeValue(payload.UpdatedAt, item.UpdatedAt)
 	if err := s.db.Save(&item).Error; err != nil {
+		s.respondError(c, http.StatusBadRequest, "failed_to_update_transaction", err)
+		return
+	}
+	if err := s.overrideTimestamps(&item, payload.CreatedAt, payload.UpdatedAt); err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_update_transaction", err)
 		return
 	}
@@ -275,12 +428,14 @@ func (s *Server) deleteTransaction(c *gin.Context) {
 }
 
 type budgetPayload struct {
-	ID           *string `json:"id"`
-	Name         string  `json:"name" binding:"required"`
-	Scope        string  `json:"scope" binding:"required,oneof=overall category"`
-	MonthlyLimit float64 `json:"monthly_limit" binding:"required"`
-	CategoryID   *string `json:"category_id"`
-	IsActive     *bool   `json:"is_active"`
+	ID           *string    `json:"id"`
+	Name         string     `json:"name" binding:"required"`
+	Scope        string     `json:"scope" binding:"required,oneof=overall category"`
+	MonthlyLimit float64    `json:"monthly_limit" binding:"required"`
+	CategoryID   *string    `json:"category_id"`
+	IsActive     *bool      `json:"is_active"`
+	CreatedAt    *time.Time `json:"created_at"`
+	UpdatedAt    *time.Time `json:"updated_at"`
 }
 
 func (s *Server) listBudgets(c *gin.Context) {
@@ -304,8 +459,14 @@ func (s *Server) createBudget(c *gin.Context) {
 		MonthlyLimit: payload.MonthlyLimit,
 		CategoryID:   payload.CategoryID,
 		IsActive:     boolValue(payload.IsActive, true),
+		CreatedAt:    timeValue(payload.CreatedAt, time.Now()),
+		UpdatedAt:    timeValue(payload.UpdatedAt, time.Now()),
 	}
 	if err := s.db.Create(&item).Error; err != nil {
+		s.respondError(c, http.StatusBadRequest, "failed_to_create_budget", err)
+		return
+	}
+	if err := s.overrideTimestamps(&item, payload.CreatedAt, payload.UpdatedAt); err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_create_budget", err)
 		return
 	}
@@ -331,7 +492,13 @@ func (s *Server) updateBudget(c *gin.Context) {
 	item.MonthlyLimit = payload.MonthlyLimit
 	item.CategoryID = payload.CategoryID
 	item.IsActive = boolValue(payload.IsActive, item.IsActive)
+	item.CreatedAt = timeValue(payload.CreatedAt, item.CreatedAt)
+	item.UpdatedAt = timeValue(payload.UpdatedAt, item.UpdatedAt)
 	if err := s.db.Save(&item).Error; err != nil {
+		s.respondError(c, http.StatusBadRequest, "failed_to_update_budget", err)
+		return
+	}
+	if err := s.overrideTimestamps(&item, payload.CreatedAt, payload.UpdatedAt); err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_update_budget", err)
 		return
 	}
@@ -357,6 +524,8 @@ type savingsGoalPayload struct {
 	SavedAmount  float64    `json:"saved_amount"`
 	TargetDate   *time.Time `json:"target_date"`
 	IsActive     *bool      `json:"is_active"`
+	CreatedAt    *time.Time `json:"created_at"`
+	UpdatedAt    *time.Time `json:"updated_at"`
 }
 
 func (s *Server) listSavingsGoals(c *gin.Context) {
@@ -380,9 +549,19 @@ func (s *Server) createSavingsGoal(c *gin.Context) {
 		SavedAmount:  payload.SavedAmount,
 		TargetDate:   payload.TargetDate,
 		IsActive:     boolValue(payload.IsActive, true),
+		CreatedAt:    timeValue(payload.CreatedAt, time.Now()),
+		UpdatedAt:    timeValue(payload.UpdatedAt, time.Now()),
 	}
 	if err := s.db.Create(&item).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_create_savings_goal", err)
+		return
+	}
+	if err := s.overrideTimestamps(&item, payload.CreatedAt, payload.UpdatedAt); err != nil {
+		s.respondError(c, http.StatusBadRequest, "failed_to_create_savings_goal", err)
+		return
+	}
+	if err := s.db.First(&item, "id = ?", item.ID).Error; err != nil {
+		s.respondError(c, http.StatusInternalServerError, "failed_to_load_savings_goal", err)
 		return
 	}
 	c.JSON(http.StatusCreated, item)
@@ -403,8 +582,18 @@ func (s *Server) updateSavingsGoal(c *gin.Context) {
 	item.SavedAmount = payload.SavedAmount
 	item.TargetDate = payload.TargetDate
 	item.IsActive = boolValue(payload.IsActive, item.IsActive)
+	item.CreatedAt = timeValue(payload.CreatedAt, item.CreatedAt)
+	item.UpdatedAt = timeValue(payload.UpdatedAt, item.UpdatedAt)
 	if err := s.db.Save(&item).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_update_savings_goal", err)
+		return
+	}
+	if err := s.overrideTimestamps(&item, payload.CreatedAt, payload.UpdatedAt); err != nil {
+		s.respondError(c, http.StatusBadRequest, "failed_to_update_savings_goal", err)
+		return
+	}
+	if err := s.db.First(&item, "id = ?", item.ID).Error; err != nil {
+		s.respondError(c, http.StatusInternalServerError, "failed_to_load_savings_goal", err)
 		return
 	}
 	c.JSON(http.StatusOK, item)
@@ -413,6 +602,114 @@ func (s *Server) updateSavingsGoal(c *gin.Context) {
 func (s *Server) deleteSavingsGoal(c *gin.Context) {
 	if err := s.db.Delete(&models.SavingsGoal{}, "id = ?", c.Param("id")).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_delete_savings_goal", err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+type subscriptionPayload struct {
+	ID                       *string    `json:"id"`
+	MerchantKey              string     `json:"merchant_key" binding:"required"`
+	DisplayName              string     `json:"display_name" binding:"required"`
+	Label                    string     `json:"label" binding:"required"`
+	AverageAmount            float64    `json:"average_amount" binding:"required"`
+	Cadence                  string     `json:"cadence" binding:"required,oneof=monthly yearly irregular"`
+	State                    string     `json:"state" binding:"required,oneof=active uncertain rejected canceled"`
+	EstimatedNextBillingDate *time.Time `json:"estimated_next_billing_date"`
+	LastChargeDate           *time.Time `json:"last_charge_date"`
+	MonthlyEquivalentAmount  float64    `json:"monthly_equivalent_amount" binding:"required"`
+	YearlyEquivalentAmount   float64    `json:"yearly_equivalent_amount" binding:"required"`
+	LatestTransactionTitle   *string    `json:"latest_transaction_title"`
+	CreatedAt                *time.Time `json:"created_at"`
+	UpdatedAt                *time.Time `json:"updated_at"`
+}
+
+func (s *Server) listSubscriptions(c *gin.Context) {
+	var items []models.SubscriptionRecord
+	if err := s.db.Order("updated_at DESC").Find(&items).Error; err != nil {
+		s.respondError(c, http.StatusInternalServerError, "failed_to_list_subscriptions", err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+func (s *Server) createSubscription(c *gin.Context) {
+	var payload subscriptionPayload
+	if !bindJSON(c, &payload) {
+		return
+	}
+	item := models.SubscriptionRecord{
+		ID:                       stringValue(payload.ID),
+		MerchantKey:              payload.MerchantKey,
+		DisplayName:              payload.DisplayName,
+		Label:                    payload.Label,
+		AverageAmount:            payload.AverageAmount,
+		Cadence:                  payload.Cadence,
+		State:                    payload.State,
+		EstimatedNextBillingDate: payload.EstimatedNextBillingDate,
+		LastChargeDate:           payload.LastChargeDate,
+		MonthlyEquivalentAmount:  payload.MonthlyEquivalentAmount,
+		YearlyEquivalentAmount:   payload.YearlyEquivalentAmount,
+		LatestTransactionTitle:   payload.LatestTransactionTitle,
+		CreatedAt:                timeValue(payload.CreatedAt, time.Now()),
+		UpdatedAt:                timeValue(payload.UpdatedAt, time.Now()),
+	}
+	if err := s.db.Create(&item).Error; err != nil {
+		s.respondError(c, http.StatusBadRequest, "failed_to_create_subscription", err)
+		return
+	}
+	if err := s.overrideTimestamps(&item, payload.CreatedAt, payload.UpdatedAt); err != nil {
+		s.respondError(c, http.StatusBadRequest, "failed_to_create_subscription", err)
+		return
+	}
+	if err := s.db.First(&item, "id = ?", item.ID).Error; err != nil {
+		s.respondError(c, http.StatusInternalServerError, "failed_to_load_subscription", err)
+		return
+	}
+	c.JSON(http.StatusCreated, item)
+}
+
+func (s *Server) updateSubscription(c *gin.Context) {
+	var item models.SubscriptionRecord
+	if err := s.db.First(&item, "id = ?", c.Param("id")).Error; err != nil {
+		s.respondError(c, http.StatusNotFound, "subscription_not_found", err)
+		return
+	}
+	var payload subscriptionPayload
+	if !bindJSON(c, &payload) {
+		return
+	}
+	item.MerchantKey = payload.MerchantKey
+	item.DisplayName = payload.DisplayName
+	item.Label = payload.Label
+	item.AverageAmount = payload.AverageAmount
+	item.Cadence = payload.Cadence
+	item.State = payload.State
+	item.EstimatedNextBillingDate = payload.EstimatedNextBillingDate
+	item.LastChargeDate = payload.LastChargeDate
+	item.MonthlyEquivalentAmount = payload.MonthlyEquivalentAmount
+	item.YearlyEquivalentAmount = payload.YearlyEquivalentAmount
+	item.LatestTransactionTitle = payload.LatestTransactionTitle
+	item.CreatedAt = timeValue(payload.CreatedAt, item.CreatedAt)
+	item.UpdatedAt = timeValue(payload.UpdatedAt, item.UpdatedAt)
+	if err := s.db.Save(&item).Error; err != nil {
+		s.respondError(c, http.StatusBadRequest, "failed_to_update_subscription", err)
+		return
+	}
+	if err := s.overrideTimestamps(&item, payload.CreatedAt, payload.UpdatedAt); err != nil {
+		s.respondError(c, http.StatusBadRequest, "failed_to_update_subscription", err)
+		return
+	}
+	if err := s.db.First(&item, "id = ?", item.ID).Error; err != nil {
+		s.respondError(c, http.StatusInternalServerError, "failed_to_load_subscription", err)
+		return
+	}
+	c.JSON(http.StatusOK, item)
+}
+
+func (s *Server) deleteSubscription(c *gin.Context) {
+	if err := s.db.Delete(&models.SubscriptionRecord{}, "id = ?", c.Param("id")).Error; err != nil {
+		s.respondError(c, http.StatusBadRequest, "failed_to_delete_subscription", err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -445,6 +742,20 @@ func stringValue(value *string) string {
 	return strings.TrimSpace(*value)
 }
 
+func stringValueOr(value *string, fallback string) string {
+	if trimmed := stringValue(value); trimmed != "" {
+		return trimmed
+	}
+	return fallback
+}
+
+func timeValue(value *time.Time, fallback time.Time) time.Time {
+	if value != nil {
+		return *value
+	}
+	return fallback
+}
+
 func parseInt(raw string, fallback int) int {
 	var out int
 	_, err := fmt.Sscanf(raw, "%d", &out)
@@ -452,4 +763,18 @@ func parseInt(raw string, fallback int) int {
 		return fallback
 	}
 	return out
+}
+
+func (s *Server) overrideTimestamps(model any, createdAt, updatedAt *time.Time) error {
+	updates := map[string]any{}
+	if createdAt != nil {
+		updates["created_at"] = *createdAt
+	}
+	if updatedAt != nil {
+		updates["updated_at"] = *updatedAt
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	return s.db.Model(model).UpdateColumns(updates).Error
 }

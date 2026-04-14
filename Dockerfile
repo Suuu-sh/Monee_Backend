@@ -15,8 +15,9 @@ COPY --from=builder /out/monee-backend /usr/local/bin/monee-backend
 RUN mkdir -p /data
 ENV APP_ENV=production \
     PORT=8080 \
+    DATABASE_DRIVER=sqlite \
     DATABASE_PATH=/data/monee.db \
-    SEED_DEMO_DATA=true
+    SEED_DEFAULT_CATEGORIES=true
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1
 CMD ["monee-backend"]
