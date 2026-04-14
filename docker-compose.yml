@@ -1,20 +1,40 @@
 services:
+  postgres:
+    image: postgres:16-bookworm
+    container_name: monee-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-monee}
+      POSTGRES_USER: ${POSTGRES_USER:-monee}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-monee}
+    ports:
+      - "${POSTGRES_PORT:-15432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-monee} -d ${POSTGRES_DB:-monee}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   api:
     build:
       context: .
       dockerfile: Dockerfile
     image: monee-backend:latest
     container_name: monee-backend
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
-      APP_ENV: production
-      PORT: 8080
-      DATABASE_PATH: /data/monee.db
-      SEED_DEMO_DATA: "true"
+      APP_ENV: ${APP_ENV:-development}
+      PORT: ${PORT:-8080}
+      DATABASE_DRIVER: ${DATABASE_DRIVER:-postgres}
+      DATABASE_URL: postgres://${POSTGRES_USER:-monee}:${POSTGRES_PASSWORD:-monee}@postgres:5432/${POSTGRES_DB:-monee}?sslmode=disable
+      SEED_DEFAULT_CATEGORIES: "${SEED_DEFAULT_CATEGORIES:-true}"
     ports:
       - "${HOST_PORT:-18080}:8080"
-    volumes:
-      - backend_data:/data
     restart: unless-stopped
 
 volumes:
-  backend_data:
+  postgres_data:

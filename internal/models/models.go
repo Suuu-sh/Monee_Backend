@@ -21,31 +21,31 @@ type Category struct {
 }
 
 type Transaction struct {
-	ID                      string     `gorm:"primaryKey" json:"id"`
-	Title                   string     `gorm:"not null" json:"title"`
-	Amount                  float64    `gorm:"not null" json:"amount"`
-	Type                    string     `gorm:"not null;index" json:"type"`
-	Date                    time.Time  `gorm:"not null;index" json:"date"`
-	Note                    *string    `json:"note,omitempty"`
-	MerchantName            *string    `json:"merchant_name,omitempty"`
-	CategoryID              *string    `gorm:"index" json:"category_id,omitempty"`
-	Category                *Category  `json:"category,omitempty"`
-	IsSubscriptionCandidate bool       `gorm:"not null;default:false" json:"is_subscription_candidate"`
-	RecurrenceHint          *string    `json:"recurrence_hint,omitempty"`
-	CreatedAt               time.Time  `json:"created_at"`
-	UpdatedAt               time.Time  `json:"updated_at"`
+	ID                      string    `gorm:"primaryKey" json:"id"`
+	Title                   string    `gorm:"not null" json:"title"`
+	Amount                  float64   `gorm:"not null" json:"amount"`
+	Type                    string    `gorm:"not null;index" json:"type"`
+	Date                    time.Time `gorm:"not null;index" json:"date"`
+	Note                    *string   `json:"note,omitempty"`
+	MerchantName            *string   `json:"merchant_name,omitempty"`
+	CategoryID              *string   `gorm:"index" json:"category_id,omitempty"`
+	Category                *Category `json:"category,omitempty"`
+	IsSubscriptionCandidate bool      `gorm:"not null;default:false" json:"is_subscription_candidate"`
+	RecurrenceHint          *string   `json:"recurrence_hint,omitempty"`
+	CreatedAt               time.Time `json:"created_at"`
+	UpdatedAt               time.Time `json:"updated_at"`
 }
 
 type Budget struct {
-	ID           string     `gorm:"primaryKey" json:"id"`
-	Name         string     `gorm:"not null" json:"name"`
-	Scope        string     `gorm:"not null;index" json:"scope"`
-	MonthlyLimit float64    `gorm:"not null" json:"monthly_limit"`
-	CategoryID   *string    `gorm:"index" json:"category_id,omitempty"`
-	Category     *Category  `json:"category,omitempty"`
-	IsActive     bool       `gorm:"not null;default:true" json:"is_active"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
+	ID           string    `gorm:"primaryKey" json:"id"`
+	Name         string    `gorm:"not null" json:"name"`
+	Scope        string    `gorm:"not null;index" json:"scope"`
+	MonthlyLimit float64   `gorm:"not null" json:"monthly_limit"`
+	CategoryID   *string   `gorm:"index" json:"category_id,omitempty"`
+	Category     *Category `json:"category,omitempty"`
+	IsActive     bool      `gorm:"not null;default:true" json:"is_active"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 type SavingsGoal struct {
@@ -57,6 +57,37 @@ type SavingsGoal struct {
 	IsActive     bool       `gorm:"not null;default:true" json:"is_active"`
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
+}
+
+type SubscriptionRecord struct {
+	ID                       string     `gorm:"primaryKey" json:"id"`
+	MerchantKey              string     `gorm:"uniqueIndex;not null" json:"merchant_key"`
+	DisplayName              string     `gorm:"not null" json:"display_name"`
+	Label                    string     `gorm:"not null" json:"label"`
+	AverageAmount            float64    `gorm:"not null" json:"average_amount"`
+	Cadence                  string     `gorm:"not null;index" json:"cadence"`
+	State                    string     `gorm:"not null;index" json:"state"`
+	EstimatedNextBillingDate *time.Time `json:"estimated_next_billing_date,omitempty"`
+	LastChargeDate           *time.Time `json:"last_charge_date,omitempty"`
+	MonthlyEquivalentAmount  float64    `gorm:"not null" json:"monthly_equivalent_amount"`
+	YearlyEquivalentAmount   float64    `gorm:"not null" json:"yearly_equivalent_amount"`
+	LatestTransactionTitle   *string    `json:"latest_transaction_title,omitempty"`
+	CreatedAt                time.Time  `json:"created_at"`
+	UpdatedAt                time.Time  `json:"updated_at"`
+}
+
+type AppPreference struct {
+	ID                     string    `gorm:"primaryKey" json:"id"`
+	CurrencyCode           string    `gorm:"not null" json:"currency_code"`
+	MonthStartDay          int       `gorm:"not null" json:"month_start_day"`
+	IsAISummariesEnabled   bool      `gorm:"not null;default:true" json:"is_ai_summaries_enabled"`
+	AppearanceRaw          string    `gorm:"not null" json:"appearance_raw"`
+	LanguageRaw            *string   `json:"language_raw,omitempty"`
+	HomeSummaryRangeRaw    *string   `json:"home_summary_range_raw,omitempty"`
+	BudgetWarningThreshold float64   `gorm:"not null;default:0.8" json:"budget_warning_threshold"`
+	SeedScenarioRaw        string    `gorm:"not null;default:balanced" json:"seed_scenario_raw"`
+	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
 }
 
 type Summary struct {
@@ -71,29 +102,32 @@ type Summary struct {
 }
 
 func (c *Category) BeforeCreate(_ *gorm.DB) error {
-	if c.ID == "" {
-		c.ID = uuid.NewString()
-	}
-	return nil
+	return ensureID(&c.ID)
 }
 
 func (t *Transaction) BeforeCreate(_ *gorm.DB) error {
-	if t.ID == "" {
-		t.ID = uuid.NewString()
-	}
-	return nil
+	return ensureID(&t.ID)
 }
 
 func (b *Budget) BeforeCreate(_ *gorm.DB) error {
-	if b.ID == "" {
-		b.ID = uuid.NewString()
-	}
-	return nil
+	return ensureID(&b.ID)
 }
 
 func (s *SavingsGoal) BeforeCreate(_ *gorm.DB) error {
-	if s.ID == "" {
-		s.ID = uuid.NewString()
+	return ensureID(&s.ID)
+}
+
+func (s *SubscriptionRecord) BeforeCreate(_ *gorm.DB) error {
+	return ensureID(&s.ID)
+}
+
+func (p *AppPreference) BeforeCreate(_ *gorm.DB) error {
+	return ensureID(&p.ID)
+}
+
+func ensureID(id *string) error {
+	if *id == "" {
+		*id = uuid.NewString()
 	}
 	return nil
 }

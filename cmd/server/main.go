@@ -30,9 +30,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	if cfg.SeedDemoData {
+	if cfg.SeedDefaultCategories {
 		if err := seed.EnsureDefaults(db); err != nil {
-			logger.Error("failed to seed defaults", "error", err)
+			logger.Error("failed to seed default categories", "error", err)
 			os.Exit(1)
 		}
 	}
@@ -48,7 +48,7 @@ func main() {
 	}
 
 	go func() {
-		logger.Info("monee-backend started", "port", cfg.Port, "database", cfg.DatabasePath)
+		logger.Info("monee-backend started", "port", cfg.Port, "database_driver", cfg.DatabaseDriver)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("server terminated", "error", err)
 			os.Exit(1)

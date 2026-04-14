@@ -1,20 +1,32 @@
 package config
 
-import "os"
+import (
+	"os"
+	"strings"
+)
 
 type Config struct {
-	AppEnv       string
-	Port         string
-	DatabasePath string
-	SeedDemoData bool
+	AppEnv                string
+	Port                  string
+	DatabaseDriver        string
+	DatabaseURL           string
+	DatabasePath          string
+	SeedDefaultCategories bool
 }
 
 func Load() Config {
+	seedDefaultCategories := envOrDefault("SEED_DEFAULT_CATEGORIES", os.Getenv("SEED_DEMO_DATA"))
+	if strings.TrimSpace(seedDefaultCategories) == "" {
+		seedDefaultCategories = "true"
+	}
+
 	return Config{
-		AppEnv:       envOrDefault("APP_ENV", "development"),
-		Port:         envOrDefault("PORT", "8080"),
-		DatabasePath: envOrDefault("DATABASE_PATH", "data/monee.db"),
-		SeedDemoData: envOrDefault("SEED_DEMO_DATA", "true") == "true",
+		AppEnv:                envOrDefault("APP_ENV", "development"),
+		Port:                  envOrDefault("PORT", "8080"),
+		DatabaseDriver:        strings.ToLower(envOrDefault("DATABASE_DRIVER", "sqlite")),
+		DatabaseURL:           envOrDefault("DATABASE_URL", ""),
+		DatabasePath:          envOrDefault("DATABASE_PATH", "data/monee.db"),
+		SeedDefaultCategories: strings.EqualFold(seedDefaultCategories, "true"),
 	}
 }
 
