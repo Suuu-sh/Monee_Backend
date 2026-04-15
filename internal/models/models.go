@@ -77,17 +77,18 @@ type SubscriptionRecord struct {
 }
 
 type AppPreference struct {
-	ID                     string    `gorm:"primaryKey" json:"id"`
-	CurrencyCode           string    `gorm:"not null" json:"currency_code"`
-	MonthStartDay          int       `gorm:"not null" json:"month_start_day"`
-	IsAISummariesEnabled   bool      `gorm:"not null;default:true" json:"is_ai_summaries_enabled"`
-	AppearanceRaw          string    `gorm:"not null" json:"appearance_raw"`
-	LanguageRaw            *string   `json:"language_raw,omitempty"`
-	HomeSummaryRangeRaw    *string   `json:"home_summary_range_raw,omitempty"`
-	BudgetWarningThreshold float64   `gorm:"not null;default:0.8" json:"budget_warning_threshold"`
-	SeedScenarioRaw        string    `gorm:"not null;default:balanced" json:"seed_scenario_raw"`
-	CreatedAt              time.Time `json:"created_at"`
-	UpdatedAt              time.Time `json:"updated_at"`
+	ID                     string     `gorm:"primaryKey" json:"id"`
+	CurrencyCode           string     `gorm:"not null" json:"currency_code"`
+	MonthStartDay          int        `gorm:"not null" json:"month_start_day"`
+	IsAISummariesEnabled   bool       `gorm:"not null;default:true" json:"is_ai_summaries_enabled"`
+	AppearanceRaw          string     `gorm:"not null" json:"appearance_raw"`
+	LanguageRaw            *string    `json:"language_raw,omitempty"`
+	HomeSummaryRangeRaw    *string    `json:"home_summary_range_raw,omitempty"`
+	HomeSelectedDate       *time.Time `json:"home_selected_date,omitempty"`
+	BudgetWarningThreshold float64    `gorm:"not null;default:0.8" json:"budget_warning_threshold"`
+	SeedScenarioRaw        string     `gorm:"not null;default:balanced" json:"seed_scenario_raw"`
+	CreatedAt              time.Time  `json:"created_at"`
+	UpdatedAt              time.Time  `json:"updated_at"`
 }
 
 type Summary struct {
