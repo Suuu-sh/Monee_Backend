@@ -67,3 +67,24 @@ curl http://127.0.0.1:18080/api/v1/summary?range=month
 - `SEED_DEFAULT_CATEGORIES=true` なら初回起動時にカテゴリだけを自動投入します
 - 取引・予算・目標のモックデータは backend 側では投入しません
 - Fly.io に持っていく場合もこの Dockerfile をベースにできます
+
+## Deploy to Fly.io
+
+`fly.toml` を使って `monee-backend.fly.dev` へデプロイできます。Fly.io 側では Managed Postgres を使い、`DATABASE_URL` は secret として app に注入します。
+
+```bash
+cd /Users/yota/Projects/Monee/Backend
+fly auth login
+fly mpg create -n monee-backend-db -o personal -r nrt --plan development --volume-size 10
+fly mpg list -o personal
+fly mpg attach <cluster-id> -a monee-backend
+fly deploy -a monee-backend
+```
+
+補足:
+
+- app 名は `monee-backend`
+- 公開 URL は `https://monee-backend.fly.dev`
+- app は `nrt` リージョンで 1 台常駐させる設定です
+- 本番では `env.production` の値を埋めなくても、Fly.io 側の `fly.toml` と secret で起動できます
+- deploy 後の確認は `https://monee-backend.fly.dev/healthz` と `https://monee-backend.fly.dev/readyz` を使います
