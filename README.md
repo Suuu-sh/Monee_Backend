@@ -88,3 +88,27 @@ fly deploy -a monee-backend
 - app は `nrt` リージョンで 1 台常駐させる設定です
 - 本番では `env.production` の値を埋めなくても、Fly.io 側の `fly.toml` と secret で起動できます
 - deploy 後の確認は `https://monee-backend.fly.dev/healthz` と `https://monee-backend.fly.dev/readyz` を使います
+
+## GitHub Actions deploy
+
+backend repo には `/.github/workflows/fly-deploy.yml` を置いてあり、次の条件で Fly.io へ deploy できます。
+
+- `main` への push
+- `workflow_dispatch`
+- このセットアップを検証するため、現在の作業ブランチ `codex/feature/mobile_backend/019d870d` への push
+
+必要な GitHub Actions secret:
+
+- `FLY_API_TOKEN`
+
+repo secret の投入例:
+
+```bash
+gh secret set FLY_API_TOKEN --repo Suuu-sh/Monee_Backend
+```
+
+手動実行:
+
+```bash
+gh workflow run "Fly Deploy" --repo Suuu-sh/Monee_Backend
+```
