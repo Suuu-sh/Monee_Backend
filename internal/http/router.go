@@ -119,6 +119,8 @@ type appPreferencePayload struct {
 	LanguageRaw            *string    `json:"language_raw"`
 	HomeSummaryRangeRaw    *string    `json:"home_summary_range_raw"`
 	HomeSelectedDate       *time.Time `json:"home_selected_date"`
+	HomeRangeStartDate     *time.Time `json:"home_range_start_date"`
+	HomeRangeEndDate       *time.Time `json:"home_range_end_date"`
 	BudgetWarningThreshold float64    `json:"budget_warning_threshold" binding:"required"`
 	SeedScenarioRaw        *string    `json:"seed_scenario_raw"`
 	CreatedAt              *time.Time `json:"created_at"`
@@ -149,6 +151,8 @@ func (s *Server) createPreference(c *gin.Context) {
 		LanguageRaw:            payload.LanguageRaw,
 		HomeSummaryRangeRaw:    payload.HomeSummaryRangeRaw,
 		HomeSelectedDate:       payload.HomeSelectedDate,
+		HomeRangeStartDate:     payload.HomeRangeStartDate,
+		HomeRangeEndDate:       payload.HomeRangeEndDate,
 		BudgetWarningThreshold: payload.BudgetWarningThreshold,
 		SeedScenarioRaw:        stringValueOr(payload.SeedScenarioRaw, "balanced"),
 		CreatedAt:              timeValue(payload.CreatedAt, time.Now()),
@@ -188,6 +192,8 @@ func (s *Server) updatePreference(c *gin.Context) {
 	item.LanguageRaw = payload.LanguageRaw
 	item.HomeSummaryRangeRaw = payload.HomeSummaryRangeRaw
 	item.HomeSelectedDate = payload.HomeSelectedDate
+	item.HomeRangeStartDate = payload.HomeRangeStartDate
+	item.HomeRangeEndDate = payload.HomeRangeEndDate
 	item.BudgetWarningThreshold = payload.BudgetWarningThreshold
 	item.SeedScenarioRaw = stringValueOr(payload.SeedScenarioRaw, item.SeedScenarioRaw)
 	item.CreatedAt = timeValue(payload.CreatedAt, item.CreatedAt)

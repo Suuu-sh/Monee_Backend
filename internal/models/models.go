@@ -85,6 +85,8 @@ type AppPreference struct {
 	LanguageRaw            *string    `json:"language_raw,omitempty"`
 	HomeSummaryRangeRaw    *string    `json:"home_summary_range_raw,omitempty"`
 	HomeSelectedDate       *time.Time `json:"home_selected_date,omitempty"`
+	HomeRangeStartDate     *time.Time `json:"home_range_start_date,omitempty"`
+	HomeRangeEndDate       *time.Time `json:"home_range_end_date,omitempty"`
 	BudgetWarningThreshold float64    `gorm:"not null;default:0.8" json:"budget_warning_threshold"`
 	SeedScenarioRaw        string     `gorm:"not null;default:balanced" json:"seed_scenario_raw"`
 	CreatedAt              time.Time  `json:"created_at"`
