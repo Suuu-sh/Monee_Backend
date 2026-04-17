@@ -49,12 +49,38 @@ func openPostgres(databaseURL string) (*gorm.DB, error) {
 }
 
 func Migrate(db *gorm.DB) error {
-	return db.AutoMigrate(
+	if err := db.AutoMigrate(
 		&models.Category{},
 		&models.Transaction{},
 		&models.Budget{},
 		&models.SavingsGoal{},
 		&models.SubscriptionRecord{},
 		&models.AppPreference{},
-	)
+	); err != nil {
+		return err
+	}
+
+	return backfillOwnership(db, models.DefaultLocalUserID)
+}
+
+func backfillOwnership(db *gorm.DB, defaultUserID string) error {
+	tables := []string{
+		"categories",
+		"transactions",
+		"budgets",
+		"savings_goals",
+		"subscription_records",
+		"app_preferences",
+	}
+
+	for _, table := range tables {
+		if err := db.Exec(
+			fmt.Sprintf("UPDATE %s SET user_id = ? WHERE user_id IS NULL OR user_id = ''", table),
+			defaultUserID,
+		).Error; err != nil {
+			return fmt.Errorf("backfill %s ownership: %w", table, err)
+		}
+	}
+
+	return nil
 }

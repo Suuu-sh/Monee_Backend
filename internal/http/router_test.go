@@ -10,9 +10,12 @@ import (
 	"testing"
 	"time"
 
+	backendauth "github.com/Suuu-sh/Monee_Backend/internal/auth"
 	"github.com/Suuu-sh/Monee_Backend/internal/config"
 	"github.com/Suuu-sh/Monee_Backend/internal/database"
+	"github.com/Suuu-sh/Monee_Backend/internal/models"
 	"github.com/Suuu-sh/Monee_Backend/internal/seed"
+	"github.com/golang-jwt/jwt/v5"
 	"gorm.io/gorm"
 )
 
@@ -23,6 +26,7 @@ func testConfig(seedDefaults bool) config.Config {
 		DatabaseDriver:        "sqlite",
 		DatabasePath:          "file::memory:?cache=shared",
 		SeedDefaultCategories: seedDefaults,
+		DefaultUserID:         models.DefaultLocalUserID,
 	}
 }
 
@@ -37,7 +41,7 @@ func testDB(t *testing.T, seedDefaults bool) *gorm.DB {
 		t.Fatalf("migrate db: %v", err)
 	}
 	if seedDefaults {
-		if err := seed.EnsureDefaults(db); err != nil {
+		if err := seed.EnsureDefaultsForUser(db, models.DefaultLocalUserID); err != nil {
 			t.Fatalf("seed defaults: %v", err)
 		}
 	}
@@ -140,4 +144,86 @@ func TestCreatePreferenceAndSubscriptionWithProvidedIDs(t *testing.T) {
 	if !ok || len(items) != 1 {
 		t.Fatalf("expected 1 subscription, got %s", listRes.Body.String())
 	}
+}
+
+func TestAuthScopesDataBySupabaseSubject(t *testing.T) {
+	cfg := testConfig(true)
+	cfg.RequireAuth = true
+	cfg.SupabaseJWTSecret = "test-supabase-secret"
+	cfg.SupabaseJWTIssuer = "https://example.supabase.co/auth/v1"
+
+	db := testDB(t, false)
+	router := NewRouter(cfg, db, slog.Default())
+
+	userA := "11111111-1111-1111-1111-111111111111"
+	userB := "22222222-2222-2222-2222-222222222222"
+
+	createCategory := func(userID, slug string) {
+		body := bytes.NewBufferString(`{"slug":"` + slug + `","name":"` + slug + `","type":"expense","icon":"cart.fill","color_token":"mint","order":1}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/categories", body)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+signedToken(t, cfg, userID))
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("expected 201 when creating category for %s, got %d: %s", userID, w.Code, w.Body.String())
+		}
+	}
+
+	createCategory(userA, "groceries")
+	createCategory(userB, "salary-b")
+
+	reqA := httptest.NewRequest(http.MethodGet, "/api/v1/categories", nil)
+	reqA.Header.Set("Authorization", "Bearer "+signedToken(t, cfg, userA))
+	resA := httptest.NewRecorder()
+	router.ServeHTTP(resA, reqA)
+	if resA.Code != http.StatusOK {
+		t.Fatalf("expected 200 for user A, got %d: %s", resA.Code, resA.Body.String())
+	}
+
+	var payloadA map[string]any
+	if err := json.Unmarshal(resA.Body.Bytes(), &payloadA); err != nil {
+		t.Fatalf("decode user A response: %v", err)
+	}
+	itemsA, ok := payloadA["items"].([]any)
+	if !ok {
+		t.Fatalf("expected categories array for user A, got %s", resA.Body.String())
+	}
+
+	for _, item := range itemsA {
+		row := item.(map[string]any)
+		if row["user_id"] != userA {
+			t.Fatalf("expected only user A data, got row %#v", row)
+		}
+	}
+
+	reqMissing := httptest.NewRequest(http.MethodGet, "/api/v1/categories", nil)
+	resMissing := httptest.NewRecorder()
+	router.ServeHTTP(resMissing, reqMissing)
+	if resMissing.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without auth header, got %d", resMissing.Code)
+	}
+
+	_, err := backendauth.NewSupabaseVerifier(cfg).Verify(reqA.Context(), "")
+	if err == nil {
+		t.Fatalf("expected missing token verification to fail")
+	}
+}
+
+func signedToken(t *testing.T, cfg config.Config, subject string) string {
+	t.Helper()
+	now := time.Now()
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"aud":  "authenticated",
+		"iss":  cfg.SupabaseJWTIssuer,
+		"sub":  subject,
+		"exp":  now.Add(30 * time.Minute).Unix(),
+		"iat":  now.Unix(),
+		"role": "authenticated",
+	})
+	signed, err := token.SignedString([]byte(cfg.SupabaseJWTSecret))
+	if err != nil {
+		t.Fatalf("sign token: %v", err)
+	}
+	return signed
 }

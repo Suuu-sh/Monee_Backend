@@ -28,15 +28,20 @@ make test
 docker compose --env-file env.local up --build -d
 ```
 
-開発用の環境変数ファイルは `env.local`、本番用は `env.production` を使います。現時点では `env.production` は空のままで構いません。
+開発用の環境変数ファイルは `env.local`、本番用は `env.production` を使います。現時点では `env.production` の Supabase 関連値は空のままで構いません。
 
 `docker compose --env-file env.local` は PostgreSQL と API を同時に起動し、デフォルトで `http://127.0.0.1:18080` に公開します。必要なら `env.local` の `HOST_PORT` で変更できます。PostgreSQL は `127.0.0.1:${POSTGRES_PORT:-15432}` で確認できます。
+
+`env.local` ではローカル PostgreSQL を使いつつ、Supabase Auth の JWT を検証するために `SUPABASE_PROJECT_URL` と `SUPABASE_REQUIRE_AUTH=true` を指定しています。これで Simulator / 実機の Mobile から匿名 Supabase セッションで backend を叩けます。
+
+Supabase 側の本番 / 共有 DB へスキーマを反映する SQL は `/Users/yota/Projects/Monee/Backend/scripts/create_monee_backend_schema.sql` に置いてあります。Supabase の SQL Editor へ貼り付けるか、書き込み権限のある MCP / CLI から適用してください。
 
 ## Mobile app integration
 
 - iOS シミュレータからは `http://127.0.0.1:18080` をそのまま利用できます
 - 実機からは Mac のローカルネットワーク IP を `Backend URL` に設定してください
 - Monee アプリの `Settings > Backend sync` から接続確認、取り込み、書き出しを行えます
+- Mobile 側は Supabase Auth の匿名セッションを自動作成 / 更新し、その bearer token を backend に付与します
 - Backend URL を保存すると、Mobile 側は起動時に「空の local store ← backend」または「空の backend ← local store」の初回同期を行えます
 - Auto sync を有効にすると、Mobile 側の編集内容を backend に自動反映できます
 - 同期対象は app preferences / categories / transactions / budgets / savings goals / subscription records です
@@ -64,20 +69,21 @@ curl http://127.0.0.1:18080/api/v1/summary?range=month
 
 ## Notes
 - Runtime は PostgreSQL を使い、テストだけ SQLite in-memory を使います
-- `SEED_DEFAULT_CATEGORIES=true` なら初回起動時にカテゴリだけを自動投入します
+- `SEED_DEFAULT_CATEGORIES=true` なら、認証済みユーザー単位で初回アクセス時にカテゴリだけを自動投入します
 - 取引・予算・目標のモックデータは backend 側では投入しません
 - Fly.io に持っていく場合もこの Dockerfile をベースにできます
 
 ## Deploy to Fly.io
 
-`fly.toml` を使って `monee-backend.fly.dev` へデプロイできます。Fly.io 側では Managed Postgres を使い、`DATABASE_URL` は secret として app に注入します。
+`fly.toml` を使って `monee-backend.fly.dev` へデプロイできます。Supabase Auth を使う場合は Fly.io 側に `SUPABASE_PROJECT_URL` と `SUPABASE_REQUIRE_AUTH=true` を入れ、`DATABASE_URL` には Supabase Postgres の接続文字列を secret として注入します。
 
 ```bash
 cd /Users/yota/Projects/Monee/Backend
 fly auth login
-fly mpg create -n monee-backend-db -o personal -r nrt --plan development --volume-size 10
-fly mpg list -o personal
-fly mpg attach <cluster-id> -a monee-backend
+fly secrets set \
+  DATABASE_URL=<supabase_postgres_url> \
+  SUPABASE_PROJECT_URL=https://<project-ref>.supabase.co \
+  SUPABASE_REQUIRE_AUTH=true
 fly deploy -a monee-backend
 ```
 
@@ -86,7 +92,7 @@ fly deploy -a monee-backend
 - app 名は `monee-backend`
 - 公開 URL は `https://monee-backend.fly.dev`
 - app は `nrt` リージョンで 1 台常駐させる設定です
-- 本番では `env.production` の値を埋めなくても、Fly.io 側の `fly.toml` と secret で起動できます
+- 本番では `env.production` の値を埋めなくても、Fly.io 側の secret で `DATABASE_URL` / `SUPABASE_PROJECT_URL` / 必要なら `SUPABASE_JWT_SECRET` を渡せば起動できます
 - deploy 後の確認は `https://monee-backend.fly.dev/healthz` と `https://monee-backend.fly.dev/readyz` を使います
 
 ## GitHub Actions deploy
