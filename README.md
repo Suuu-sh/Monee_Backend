@@ -34,7 +34,7 @@ docker compose --env-file env.local up --build -d
 
 `env.local` ではローカル PostgreSQL を使いつつ、Supabase Auth の JWT を検証するために `SUPABASE_PROJECT_URL` と `SUPABASE_REQUIRE_AUTH=true` を指定しています。これで Simulator / 実機の Mobile から匿名 Supabase セッションで backend を叩けます。
 
-Supabase 側の本番 / 共有 DB へスキーマを反映する SQL は `/Users/yota/Projects/Monee/Backend/scripts/create_monee_backend_schema.sql` に置いてあります。Supabase の SQL Editor へ貼り付けるか、書き込み権限のある MCP / CLI から適用してください。
+Supabase 側の本番 / 共有 DB へ反映するスキーマは `/Users/yota/Projects/Monee/Backend/supabase/migrations/20260417170145_create_monee_backend_schema.sql` に置いてあります。`supabase/config.toml` も同梱してあり、GitHub Actions から `supabase db push --db-url ...` で自動適用できるようにしています。
 
 ## Mobile app integration
 
@@ -106,11 +106,15 @@ backend repo には `/.github/workflows/fly-deploy.yml` を置いてあり、次
 必要な GitHub Actions secret:
 
 - `FLY_API_TOKEN`
+- `SUPABASE_DB_URL`
+
+`SUPABASE_DB_URL` には Supabase の Connect 画面で取得できる Postgres 接続文字列を入れてください。`main` へ push すると、Fly deploy の前に `supabase/migrations` 配下の migration が自動適用されます。`workflow_dispatch` から実行する場合は `run_db_migrations=true` にすると同じ migration job を明示的に走らせられます。
 
 repo secret の投入例:
 
 ```bash
 gh secret set FLY_API_TOKEN --repo Suuu-sh/Monee_Backend
+gh secret set SUPABASE_DB_URL --repo Suuu-sh/Monee_Backend
 ```
 
 手動実行:
@@ -118,3 +122,9 @@ gh secret set FLY_API_TOKEN --repo Suuu-sh/Monee_Backend
 ```bash
 gh workflow run "Fly Deploy" --repo Suuu-sh/Monee_Backend
 ```
+
+補足:
+
+- `SUPABASE_DB_URL` が未設定のまま `main` へ push すると migration job は失敗します
+- feature branch push では migration job を自動では走らせず、deploy のみ継続します
+- migration 履歴は Supabase 側の `supabase_migrations.schema_migrations` に記録されます
