@@ -37,7 +37,7 @@ func testDB(t *testing.T, seedDefaults bool) *gorm.DB {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := database.Migrate(db); err != nil {
+	if err := database.Migrate(db, cfg); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}
 	if seedDefaults {

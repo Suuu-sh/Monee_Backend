@@ -35,6 +35,7 @@ docker compose --env-file env.local up --build -d
 `env.local` ではローカル PostgreSQL を使いつつ、Supabase Auth の JWT を検証するために `SUPABASE_PROJECT_URL` と `SUPABASE_REQUIRE_AUTH=true` を指定しています。これで Simulator / 実機の Mobile から匿名 Supabase セッションで backend を叩けます。
 
 Supabase 側の本番 / 共有 DB へ反映するスキーマは `/Users/yota/Projects/Monee/Backend/supabase/migrations/20260417170145_create_monee_backend_schema.sql` に置いてあります。`supabase/config.toml` も同梱してあり、GitHub Actions から `supabase db push --db-url ...` で自動適用できるようにしています。
+本番 (`APP_ENV=production` かつ PostgreSQL) では backend 起動時の GORM `AutoMigrate` を走らせず、`supabase/migrations` で管理する前提にしています。これで既存データに対する危険な起動時 migration を避けます。
 
 ## Mobile app integration
 

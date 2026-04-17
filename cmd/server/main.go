@@ -25,7 +25,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := database.Migrate(db); err != nil {
+	if err := database.Migrate(db, cfg); err != nil {
 		logger.Error("failed to migrate database", "error", err)
 		os.Exit(1)
 	}

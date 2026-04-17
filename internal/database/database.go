@@ -48,7 +48,11 @@ func openPostgres(databaseURL string) (*gorm.DB, error) {
 	return db, nil
 }
 
-func Migrate(db *gorm.DB) error {
+func Migrate(db *gorm.DB, cfg config.Config) error {
+	if shouldSkipManagedPostgresMigrations(cfg) {
+		return nil
+	}
+
 	if err := db.AutoMigrate(
 		&models.Category{},
 		&models.Transaction{},
@@ -61,6 +65,13 @@ func Migrate(db *gorm.DB) error {
 	}
 
 	return backfillOwnership(db, models.DefaultLocalUserID)
+}
+
+func shouldSkipManagedPostgresMigrations(cfg config.Config) bool {
+	driver := strings.ToLower(strings.TrimSpace(cfg.DatabaseDriver))
+	appEnv := strings.ToLower(strings.TrimSpace(cfg.AppEnv))
+
+	return (driver == "postgres" || driver == "postgresql") && appEnv == "production"
 }
 
 func backfillOwnership(db *gorm.DB, defaultUserID string) error {
