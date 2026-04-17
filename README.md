@@ -121,6 +121,7 @@ gh secret set SUPABASE_DB_URL --repo Suuu-sh/Monee_Backend
 
 ```bash
 gh workflow run "Fly Deploy" --repo Suuu-sh/Monee_Backend
+gh workflow run "Fly Deploy" --repo Suuu-sh/Monee_Backend -f run_db_migrations=true
 ```
 
 補足:
