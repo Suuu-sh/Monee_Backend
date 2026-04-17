@@ -1,173 +1,144 @@
-create extension if not exists pgcrypto;
+drop table if exists public.transactions cascade;
+drop table if exists public.budgets cascade;
+drop table if exists public.savings_goals cascade;
+drop table if exists public.subscription_records cascade;
+drop table if exists public.app_preferences cascade;
+drop table if exists public.categories cascade;
 
-create table if not exists public.categories (
-  id uuid primary key default gen_random_uuid(),
+create table public.categories (
+  id text primary key,
   user_id text not null,
+  slug text not null,
   name text not null,
+  type text not null,
   icon text not null,
-  type text not null check (type in ('expense', 'income')),
-  color text not null,
-  is_default boolean not null default false,
-  sort_order integer not null default 0,
+  color_token text not null,
+  "order" integer not null default 0,
+  is_active boolean not null default true,
   created_at timestamptz not null default timezone('utc', now()),
-  updated_at timestamptz not null default timezone('utc', now()),
-  deleted_at timestamptz
-);
-
-create unique index if not exists categories_user_name_type_key
-  on public.categories (user_id, name, type)
-  where deleted_at is null;
-
-create index if not exists categories_user_type_idx
-  on public.categories (user_id, type, sort_order, created_at desc);
-
-create table if not exists public.transactions (
-  id uuid primary key default gen_random_uuid(),
-  user_id text not null,
-  category_id uuid references public.categories(id) on delete set null,
-  title text not null,
-  amount bigint not null,
-  type text not null check (type in ('expense', 'income')),
-  occurred_at timestamptz not null,
-  note text,
-  payment_method text not null default 'other',
-  is_subscription boolean not null default false,
-  billing_cycle text,
-  created_at timestamptz not null default timezone('utc', now()),
-  updated_at timestamptz not null default timezone('utc', now()),
-  deleted_at timestamptz
-);
-
-create index if not exists transactions_user_occurred_idx
-  on public.transactions (user_id, occurred_at desc)
-  where deleted_at is null;
-
-create index if not exists transactions_user_type_idx
-  on public.transactions (user_id, type, occurred_at desc)
-  where deleted_at is null;
-
-create table if not exists public.budgets (
-  id uuid primary key default gen_random_uuid(),
-  user_id text not null,
-  category_id uuid references public.categories(id) on delete cascade,
-  amount bigint not null,
-  month_start date not null,
-  created_at timestamptz not null default timezone('utc', now()),
-  updated_at timestamptz not null default timezone('utc', now()),
-  deleted_at timestamptz,
-  unique (user_id, category_id, month_start)
-);
-
-create index if not exists budgets_user_month_idx
-  on public.budgets (user_id, month_start desc)
-  where deleted_at is null;
-
-create table if not exists public.savings_goals (
-  id uuid primary key default gen_random_uuid(),
-  user_id text not null,
-  title text not null,
-  target_amount bigint not null,
-  current_amount bigint not null default 0,
-  target_date date,
-  note text,
-  created_at timestamptz not null default timezone('utc', now()),
-  updated_at timestamptz not null default timezone('utc', now()),
-  deleted_at timestamptz
-);
-
-create index if not exists savings_goals_user_updated_idx
-  on public.savings_goals (user_id, updated_at desc)
-  where deleted_at is null;
-
-create table if not exists public.subscription_records (
-  id uuid primary key default gen_random_uuid(),
-  user_id text not null,
-  name text not null,
-  amount bigint not null,
-  billing_cycle text not null check (billing_cycle in ('monthly', 'yearly')),
-  category_id uuid references public.categories(id) on delete set null,
-  first_billing_date date not null,
-  note text,
-  created_at timestamptz not null default timezone('utc', now()),
-  updated_at timestamptz not null default timezone('utc', now()),
-  deleted_at timestamptz
-);
-
-create unique index if not exists subscription_records_user_name_key
-  on public.subscription_records (user_id, name)
-  where deleted_at is null;
-
-create index if not exists subscription_records_user_updated_idx
-  on public.subscription_records (user_id, updated_at desc)
-  where deleted_at is null;
-
-create table if not exists public.app_preferences (
-  user_id text primary key,
-  selected_budget_tab text not null default 'budget',
-  preferred_home_tab text not null default 'summary',
-  home_time_filter text not null default 'month',
-  home_custom_start date,
-  home_custom_end date,
   updated_at timestamptz not null default timezone('utc', now())
 );
 
-grant usage on schema public to anon, authenticated, service_role;
-grant all on all tables in schema public to anon, authenticated, service_role;
-grant all on all sequences in schema public to anon, authenticated, service_role;
-alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
-alter default privileges in schema public grant all on sequences to anon, authenticated, service_role;
+create unique index idx_categories_user_slug
+  on public.categories (user_id, slug);
 
-alter table public.categories enable row level security;
-alter table public.transactions enable row level security;
-alter table public.budgets enable row level security;
-alter table public.savings_goals enable row level security;
-alter table public.subscription_records enable row level security;
-alter table public.app_preferences enable row level security;
+create index idx_categories_type
+  on public.categories (type);
 
-do $$ begin
-  create policy categories_own
-    on public.categories
-    for all
-    using (auth.uid()::text = user_id)
-    with check (auth.uid()::text = user_id);
-exception when duplicate_object then null; end $$;
+create index idx_categories_user_id
+  on public.categories (user_id);
 
-do $$ begin
-  create policy transactions_own
-    on public.transactions
-    for all
-    using (auth.uid()::text = user_id)
-    with check (auth.uid()::text = user_id);
-exception when duplicate_object then null; end $$;
+create table public.transactions (
+  id text primary key,
+  user_id text not null,
+  title text not null,
+  amount double precision not null,
+  type text not null,
+  date timestamptz not null,
+  note text,
+  merchant_name text,
+  category_id text references public.categories(id) on delete set null,
+  is_subscription_candidate boolean not null default false,
+  recurrence_hint text,
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now())
+);
 
-do $$ begin
-  create policy budgets_own
-    on public.budgets
-    for all
-    using (auth.uid()::text = user_id)
-    with check (auth.uid()::text = user_id);
-exception when duplicate_object then null; end $$;
+create index idx_transactions_user_id
+  on public.transactions (user_id);
 
-do $$ begin
-  create policy savings_goals_own
-    on public.savings_goals
-    for all
-    using (auth.uid()::text = user_id)
-    with check (auth.uid()::text = user_id);
-exception when duplicate_object then null; end $$;
+create index idx_transactions_type
+  on public.transactions (type);
 
-do $$ begin
-  create policy subscription_records_own
-    on public.subscription_records
-    for all
-    using (auth.uid()::text = user_id)
-    with check (auth.uid()::text = user_id);
-exception when duplicate_object then null; end $$;
+create index idx_transactions_date
+  on public.transactions (date);
 
-do $$ begin
-  create policy app_preferences_own
-    on public.app_preferences
-    for all
-    using (auth.uid()::text = user_id)
-    with check (auth.uid()::text = user_id);
-exception when duplicate_object then null; end $$;
+create index idx_transactions_category_id
+  on public.transactions (category_id);
+
+create table public.budgets (
+  id text primary key,
+  user_id text not null,
+  name text not null,
+  scope text not null,
+  monthly_limit double precision not null,
+  category_id text references public.categories(id) on delete set null,
+  is_active boolean not null default true,
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now())
+);
+
+create index idx_budgets_user_id
+  on public.budgets (user_id);
+
+create index idx_budgets_scope
+  on public.budgets (scope);
+
+create index idx_budgets_category_id
+  on public.budgets (category_id);
+
+create table public.savings_goals (
+  id text primary key,
+  user_id text not null,
+  name text not null,
+  target_amount double precision not null,
+  saved_amount double precision not null default 0,
+  target_date timestamptz,
+  is_active boolean not null default true,
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now())
+);
+
+create index idx_savings_goals_user_id
+  on public.savings_goals (user_id);
+
+create table public.subscription_records (
+  id text primary key,
+  user_id text not null,
+  merchant_key text not null,
+  display_name text not null,
+  label text not null,
+  average_amount double precision not null,
+  cadence text not null,
+  state text not null,
+  estimated_next_billing_date timestamptz,
+  last_charge_date timestamptz,
+  monthly_equivalent_amount double precision not null,
+  yearly_equivalent_amount double precision not null,
+  latest_transaction_title text,
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now())
+);
+
+create unique index idx_subscriptions_user_merchant_key
+  on public.subscription_records (user_id, merchant_key);
+
+create index idx_subscription_records_user_id
+  on public.subscription_records (user_id);
+
+create index idx_subscription_records_cadence
+  on public.subscription_records (cadence);
+
+create index idx_subscription_records_state
+  on public.subscription_records (state);
+
+create table public.app_preferences (
+  id text primary key,
+  user_id text not null,
+  currency_code text not null,
+  month_start_day integer not null,
+  is_ai_summaries_enabled boolean not null default true,
+  appearance_raw text not null,
+  language_raw text,
+  home_summary_range_raw text,
+  home_selected_date timestamptz,
+  home_range_start_date timestamptz,
+  home_range_end_date timestamptz,
+  budget_warning_threshold double precision not null default 0.8,
+  seed_scenario_raw text not null default 'balanced',
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now())
+);
+
+create index idx_app_preferences_user_id
+  on public.app_preferences (user_id);
