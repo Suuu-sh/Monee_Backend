@@ -25,13 +25,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := database.Migrate(db); err != nil {
+	if err := database.Migrate(db, cfg); err != nil {
 		logger.Error("failed to migrate database", "error", err)
 		os.Exit(1)
 	}
 
-	if cfg.SeedDefaultCategories {
-		if err := seed.EnsureDefaults(db); err != nil {
+	if cfg.SeedDefaultCategories && !cfg.RequireAuth {
+		if err := seed.EnsureDefaultsForUser(db, cfg.DefaultUserID); err != nil {
 			logger.Error("failed to seed default categories", "error", err)
 			os.Exit(1)
 		}

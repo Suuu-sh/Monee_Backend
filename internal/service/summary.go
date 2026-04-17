@@ -15,7 +15,7 @@ func NewSummaryService(db *gorm.DB) *SummaryService {
 	return &SummaryService{db: db}
 }
 
-func (s *SummaryService) Build(rangeKey string, now time.Time) (models.Summary, error) {
+func (s *SummaryService) Build(rangeKey string, now time.Time, userID string) (models.Summary, error) {
 	var summary models.Summary
 	var start, end *time.Time
 
@@ -24,7 +24,7 @@ func (s *SummaryService) Build(rangeKey string, now time.Time) (models.Summary, 
 		start, end = &intervalStart, &intervalEnd
 	}
 
-	query := s.db.Model(&models.Transaction{})
+	query := s.db.Model(&models.Transaction{}).Where("user_id = ?", userID)
 	if start != nil && end != nil {
 		query = query.Where("date >= ? AND date < ?", *start, *end)
 	}
@@ -35,7 +35,7 @@ func (s *SummaryService) Build(rangeKey string, now time.Time) (models.Summary, 
 	}
 
 	var allScoped []models.Transaction
-	countQuery := s.db.Model(&models.Transaction{})
+	countQuery := s.db.Model(&models.Transaction{}).Where("user_id = ?", userID)
 	if start != nil && end != nil {
 		countQuery = countQuery.Where("date >= ? AND date < ?", *start, *end)
 	}

@@ -6,14 +6,59 @@ on:
       - main
       - codex/feature/mobile_backend/019d870d
   workflow_dispatch:
+    inputs:
+      run_db_migrations:
+        description: Run Supabase migrations before deploy
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: fly-deploy-production
   cancel-in-progress: false
 
 jobs:
+  migrate-db:
+    name: Apply Supabase migrations
+    if: ${{ github.ref_name == 'main' || (github.event_name == 'workflow_dispatch' && inputs.run_db_migrations) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Validate database connection secret
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          if [ -z "${SUPABASE_DB_URL}" ]; then
+            echo "SUPABASE_DB_URL secret is not configured."
+            exit 1
+          fi
+
+      - name: Push migrations to Supabase
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: supabase db push --db-url "$SUPABASE_DB_URL"
+
+      - name: Show migration status
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: supabase migration list --db-url "$SUPABASE_DB_URL"
+
   deploy:
     name: Deploy app
+    needs:
+      - migrate-db
+    if: ${{ always() && (needs.migrate-db.result == 'success' || needs.migrate-db.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -21,7 +66,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Setup flyctl
         uses: superfly/flyctl-actions/setup-flyctl@1.5

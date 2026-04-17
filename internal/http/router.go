@@ -1,14 +1,17 @@
 package http
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
+	backendauth "github.com/Suuu-sh/Monee_Backend/internal/auth"
 	"github.com/Suuu-sh/Monee_Backend/internal/config"
 	"github.com/Suuu-sh/Monee_Backend/internal/models"
+	"github.com/Suuu-sh/Monee_Backend/internal/seed"
 	"github.com/Suuu-sh/Monee_Backend/internal/service"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -16,11 +19,14 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+const authenticatedUserIDContextKey = "authenticated_user_id"
+
 type Server struct {
 	cfg            config.Config
 	db             *gorm.DB
 	logger         *slog.Logger
 	summaryService *service.SummaryService
+	verifier       *backendauth.SupabaseVerifier
 }
 
 func NewRouter(cfg config.Config, db *gorm.DB, logger *slog.Logger) *gin.Engine {
@@ -40,13 +46,21 @@ func NewRouter(cfg config.Config, db *gorm.DB, logger *slog.Logger) *gin.Engine 
 		MaxAge:           12 * time.Hour,
 	}))
 
-	server := &Server{cfg: cfg, db: db, logger: logger, summaryService: service.NewSummaryService(db)}
+	server := &Server{
+		cfg:            cfg,
+		db:             db,
+		logger:         logger,
+		summaryService: service.NewSummaryService(db),
+		verifier:       backendauth.NewSupabaseVerifier(cfg),
+	}
 
 	router.GET("/healthz", server.healthz)
 	router.GET("/readyz", server.readyz)
 
 	api := router.Group("/api/v1")
 	{
+		api.Use(server.authMiddleware())
+
 		api.GET("/summary", server.getSummary)
 
 		api.GET("/preferences", server.listPreferences)
@@ -102,7 +116,7 @@ func (s *Server) readyz(c *gin.Context) {
 
 func (s *Server) getSummary(c *gin.Context) {
 	rangeKey := c.DefaultQuery("range", "month")
-	summary, err := s.summaryService.Build(rangeKey, time.Now())
+	summary, err := s.summaryService.Build(rangeKey, time.Now(), s.currentUserID(c))
 	if err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_build_summary", err)
 		return
@@ -129,7 +143,7 @@ type appPreferencePayload struct {
 
 func (s *Server) listPreferences(c *gin.Context) {
 	var items []models.AppPreference
-	if err := s.db.Order("created_at ASC").Find(&items).Error; err != nil {
+	if err := s.scopedDB(c).Order("created_at ASC").Find(&items).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_list_preferences", err)
 		return
 	}
@@ -144,6 +158,7 @@ func (s *Server) createPreference(c *gin.Context) {
 
 	item := models.AppPreference{
 		ID:                     stringValue(payload.ID),
+		UserID:                 s.currentUserID(c),
 		CurrencyCode:           payload.CurrencyCode,
 		MonthStartDay:          payload.MonthStartDay,
 		IsAISummariesEnabled:   boolValue(payload.IsAISummariesEnabled, true),
@@ -158,15 +173,15 @@ func (s *Server) createPreference(c *gin.Context) {
 		CreatedAt:              timeValue(payload.CreatedAt, time.Now()),
 		UpdatedAt:              timeValue(payload.UpdatedAt, time.Now()),
 	}
-	if err := s.db.Create(&item).Error; err != nil {
+	if err := s.scopedDB(c).Create(&item).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_create_preference", err)
 		return
 	}
-	if err := s.overrideTimestamps(&item, payload.CreatedAt, payload.UpdatedAt); err != nil {
+	if err := s.overrideTimestamps(c, &item, payload.CreatedAt, payload.UpdatedAt); err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_create_preference", err)
 		return
 	}
-	if err := s.db.First(&item, "id = ?", item.ID).Error; err != nil {
+	if err := s.scopedDB(c).First(&item, "id = ?", item.ID).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_load_preference", err)
 		return
 	}
@@ -175,7 +190,7 @@ func (s *Server) createPreference(c *gin.Context) {
 
 func (s *Server) updatePreference(c *gin.Context) {
 	var item models.AppPreference
-	if err := s.db.First(&item, "id = ?", c.Param("id")).Error; err != nil {
+	if err := s.scopedDB(c).First(&item, "id = ?", c.Param("id")).Error; err != nil {
 		s.respondError(c, http.StatusNotFound, "preference_not_found", err)
 		return
 	}
@@ -199,15 +214,15 @@ func (s *Server) updatePreference(c *gin.Context) {
 	item.CreatedAt = timeValue(payload.CreatedAt, item.CreatedAt)
 	item.UpdatedAt = timeValue(payload.UpdatedAt, item.UpdatedAt)
 
-	if err := s.db.Save(&item).Error; err != nil {
+	if err := s.scopedDB(c).Save(&item).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_update_preference", err)
 		return
 	}
-	if err := s.overrideTimestamps(&item, payload.CreatedAt, payload.UpdatedAt); err != nil {
+	if err := s.overrideTimestamps(c, &item, payload.CreatedAt, payload.UpdatedAt); err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_update_preference", err)
 		return
 	}
-	if err := s.db.First(&item, "id = ?", item.ID).Error; err != nil {
+	if err := s.scopedDB(c).First(&item, "id = ?", item.ID).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_load_preference", err)
 		return
 	}
@@ -215,7 +230,7 @@ func (s *Server) updatePreference(c *gin.Context) {
 }
 
 func (s *Server) deletePreference(c *gin.Context) {
-	if err := s.db.Delete(&models.AppPreference{}, "id = ?", c.Param("id")).Error; err != nil {
+	if err := s.scopedDB(c).Delete(&models.AppPreference{}, "id = ?", c.Param("id")).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_delete_preference", err)
 		return
 	}
@@ -237,7 +252,7 @@ type categoryPayload struct {
 
 func (s *Server) listCategories(c *gin.Context) {
 	var categories []models.Category
-	query := s.db.
+	query := s.scopedDB(c).
 		Order(clause.OrderByColumn{Column: clause.Column{Name: "order"}}).
 		Order(clause.OrderByColumn{Column: clause.Column{Name: "created_at"}})
 	if categoryType := strings.TrimSpace(c.Query("type")); categoryType != "" {
@@ -257,6 +272,7 @@ func (s *Server) createCategory(c *gin.Context) {
 	}
 	item := models.Category{
 		ID:         stringValue(payload.ID),
+		UserID:     s.currentUserID(c),
 		Slug:       payload.Slug,
 		Name:       payload.Name,
 		Type:       payload.Type,
@@ -267,15 +283,15 @@ func (s *Server) createCategory(c *gin.Context) {
 		CreatedAt:  timeValue(payload.CreatedAt, time.Now()),
 		UpdatedAt:  timeValue(payload.UpdatedAt, time.Now()),
 	}
-	if err := s.db.Create(&item).Error; err != nil {
+	if err := s.scopedDB(c).Create(&item).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_create_category", err)
 		return
 	}
-	if err := s.overrideTimestamps(&item, payload.CreatedAt, payload.UpdatedAt); err != nil {
+	if err := s.overrideTimestamps(c, &item, payload.CreatedAt, payload.UpdatedAt); err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_create_category", err)
 		return
 	}
-	if err := s.db.First(&item, "id = ?", item.ID).Error; err != nil {
+	if err := s.scopedDB(c).First(&item, "id = ?", item.ID).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_load_category", err)
 		return
 	}
@@ -284,7 +300,7 @@ func (s *Server) createCategory(c *gin.Context) {
 
 func (s *Server) updateCategory(c *gin.Context) {
 	var item models.Category
-	if err := s.db.First(&item, "id = ?", c.Param("id")).Error; err != nil {
+	if err := s.scopedDB(c).First(&item, "id = ?", c.Param("id")).Error; err != nil {
 		s.respondError(c, http.StatusNotFound, "category_not_found", err)
 		return
 	}
@@ -301,15 +317,15 @@ func (s *Server) updateCategory(c *gin.Context) {
 	item.IsActive = boolValue(payload.IsActive, item.IsActive)
 	item.CreatedAt = timeValue(payload.CreatedAt, item.CreatedAt)
 	item.UpdatedAt = timeValue(payload.UpdatedAt, item.UpdatedAt)
-	if err := s.db.Save(&item).Error; err != nil {
+	if err := s.scopedDB(c).Save(&item).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_update_category", err)
 		return
 	}
-	if err := s.overrideTimestamps(&item, payload.CreatedAt, payload.UpdatedAt); err != nil {
+	if err := s.overrideTimestamps(c, &item, payload.CreatedAt, payload.UpdatedAt); err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_update_category", err)
 		return
 	}
-	if err := s.db.First(&item, "id = ?", item.ID).Error; err != nil {
+	if err := s.scopedDB(c).First(&item, "id = ?", item.ID).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_load_category", err)
 		return
 	}
@@ -317,7 +333,7 @@ func (s *Server) updateCategory(c *gin.Context) {
 }
 
 func (s *Server) deleteCategory(c *gin.Context) {
-	if err := s.db.Delete(&models.Category{}, "id = ?", c.Param("id")).Error; err != nil {
+	if err := s.scopedDB(c).Delete(&models.Category{}, "id = ?", c.Param("id")).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_delete_category", err)
 		return
 	}
@@ -341,7 +357,7 @@ type transactionPayload struct {
 
 func (s *Server) listTransactions(c *gin.Context) {
 	var items []models.Transaction
-	query := s.db.Preload("Category").Order("date DESC").Order("created_at DESC")
+	query := s.preloadOwnedCategory(s.scopedDB(c), s.currentUserID(c)).Order("date DESC").Order("created_at DESC")
 	if txType := strings.TrimSpace(c.Query("type")); txType != "" {
 		query = query.Where("type = ?", txType)
 	}
@@ -365,6 +381,7 @@ func (s *Server) createTransaction(c *gin.Context) {
 	}
 	item := models.Transaction{
 		ID:                      stringValue(payload.ID),
+		UserID:                  s.currentUserID(c),
 		Title:                   payload.Title,
 		Amount:                  payload.Amount,
 		Type:                    payload.Type,
@@ -377,15 +394,21 @@ func (s *Server) createTransaction(c *gin.Context) {
 		CreatedAt:               timeValue(payload.CreatedAt, time.Now()),
 		UpdatedAt:               timeValue(payload.UpdatedAt, time.Now()),
 	}
-	if err := s.db.Create(&item).Error; err != nil {
+	if payload.CategoryID != nil {
+		if err := s.ensureOwnedCategory(c, payload.CategoryID); err != nil {
+			s.respondError(c, http.StatusBadRequest, "invalid_category_reference", err)
+			return
+		}
+	}
+	if err := s.scopedDB(c).Create(&item).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_create_transaction", err)
 		return
 	}
-	if err := s.overrideTimestamps(&item, payload.CreatedAt, payload.UpdatedAt); err != nil {
+	if err := s.overrideTimestamps(c, &item, payload.CreatedAt, payload.UpdatedAt); err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_create_transaction", err)
 		return
 	}
-	if err := s.db.Preload("Category").First(&item, "id = ?", item.ID).Error; err != nil {
+	if err := s.preloadOwnedCategory(s.scopedDB(c), s.currentUserID(c)).First(&item, "id = ?", item.ID).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_load_transaction", err)
 		return
 	}
@@ -394,13 +417,19 @@ func (s *Server) createTransaction(c *gin.Context) {
 
 func (s *Server) updateTransaction(c *gin.Context) {
 	var item models.Transaction
-	if err := s.db.First(&item, "id = ?", c.Param("id")).Error; err != nil {
+	if err := s.scopedDB(c).First(&item, "id = ?", c.Param("id")).Error; err != nil {
 		s.respondError(c, http.StatusNotFound, "transaction_not_found", err)
 		return
 	}
 	var payload transactionPayload
 	if !bindJSON(c, &payload) {
 		return
+	}
+	if payload.CategoryID != nil {
+		if err := s.ensureOwnedCategory(c, payload.CategoryID); err != nil {
+			s.respondError(c, http.StatusBadRequest, "invalid_category_reference", err)
+			return
+		}
 	}
 	item.Title = payload.Title
 	item.Amount = payload.Amount
@@ -413,15 +442,15 @@ func (s *Server) updateTransaction(c *gin.Context) {
 	item.RecurrenceHint = payload.RecurrenceHint
 	item.CreatedAt = timeValue(payload.CreatedAt, item.CreatedAt)
 	item.UpdatedAt = timeValue(payload.UpdatedAt, item.UpdatedAt)
-	if err := s.db.Save(&item).Error; err != nil {
+	if err := s.scopedDB(c).Save(&item).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_update_transaction", err)
 		return
 	}
-	if err := s.overrideTimestamps(&item, payload.CreatedAt, payload.UpdatedAt); err != nil {
+	if err := s.overrideTimestamps(c, &item, payload.CreatedAt, payload.UpdatedAt); err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_update_transaction", err)
 		return
 	}
-	if err := s.db.Preload("Category").First(&item, "id = ?", item.ID).Error; err != nil {
+	if err := s.preloadOwnedCategory(s.scopedDB(c), s.currentUserID(c)).First(&item, "id = ?", item.ID).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_load_transaction", err)
 		return
 	}
@@ -429,7 +458,7 @@ func (s *Server) updateTransaction(c *gin.Context) {
 }
 
 func (s *Server) deleteTransaction(c *gin.Context) {
-	if err := s.db.Delete(&models.Transaction{}, "id = ?", c.Param("id")).Error; err != nil {
+	if err := s.scopedDB(c).Delete(&models.Transaction{}, "id = ?", c.Param("id")).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_delete_transaction", err)
 		return
 	}
@@ -449,7 +478,7 @@ type budgetPayload struct {
 
 func (s *Server) listBudgets(c *gin.Context) {
 	var items []models.Budget
-	if err := s.db.Preload("Category").Order("created_at DESC").Find(&items).Error; err != nil {
+	if err := s.preloadOwnedCategory(s.scopedDB(c), s.currentUserID(c)).Order("created_at DESC").Find(&items).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_list_budgets", err)
 		return
 	}
@@ -463,6 +492,7 @@ func (s *Server) createBudget(c *gin.Context) {
 	}
 	item := models.Budget{
 		ID:           stringValue(payload.ID),
+		UserID:       s.currentUserID(c),
 		Name:         payload.Name,
 		Scope:        payload.Scope,
 		MonthlyLimit: payload.MonthlyLimit,
@@ -471,15 +501,21 @@ func (s *Server) createBudget(c *gin.Context) {
 		CreatedAt:    timeValue(payload.CreatedAt, time.Now()),
 		UpdatedAt:    timeValue(payload.UpdatedAt, time.Now()),
 	}
-	if err := s.db.Create(&item).Error; err != nil {
+	if payload.CategoryID != nil {
+		if err := s.ensureOwnedCategory(c, payload.CategoryID); err != nil {
+			s.respondError(c, http.StatusBadRequest, "invalid_category_reference", err)
+			return
+		}
+	}
+	if err := s.scopedDB(c).Create(&item).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_create_budget", err)
 		return
 	}
-	if err := s.overrideTimestamps(&item, payload.CreatedAt, payload.UpdatedAt); err != nil {
+	if err := s.overrideTimestamps(c, &item, payload.CreatedAt, payload.UpdatedAt); err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_create_budget", err)
 		return
 	}
-	if err := s.db.Preload("Category").First(&item, "id = ?", item.ID).Error; err != nil {
+	if err := s.preloadOwnedCategory(s.scopedDB(c), s.currentUserID(c)).First(&item, "id = ?", item.ID).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_load_budget", err)
 		return
 	}
@@ -488,13 +524,19 @@ func (s *Server) createBudget(c *gin.Context) {
 
 func (s *Server) updateBudget(c *gin.Context) {
 	var item models.Budget
-	if err := s.db.First(&item, "id = ?", c.Param("id")).Error; err != nil {
+	if err := s.scopedDB(c).First(&item, "id = ?", c.Param("id")).Error; err != nil {
 		s.respondError(c, http.StatusNotFound, "budget_not_found", err)
 		return
 	}
 	var payload budgetPayload
 	if !bindJSON(c, &payload) {
 		return
+	}
+	if payload.CategoryID != nil {
+		if err := s.ensureOwnedCategory(c, payload.CategoryID); err != nil {
+			s.respondError(c, http.StatusBadRequest, "invalid_category_reference", err)
+			return
+		}
 	}
 	item.Name = payload.Name
 	item.Scope = payload.Scope
@@ -503,15 +545,15 @@ func (s *Server) updateBudget(c *gin.Context) {
 	item.IsActive = boolValue(payload.IsActive, item.IsActive)
 	item.CreatedAt = timeValue(payload.CreatedAt, item.CreatedAt)
 	item.UpdatedAt = timeValue(payload.UpdatedAt, item.UpdatedAt)
-	if err := s.db.Save(&item).Error; err != nil {
+	if err := s.scopedDB(c).Save(&item).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_update_budget", err)
 		return
 	}
-	if err := s.overrideTimestamps(&item, payload.CreatedAt, payload.UpdatedAt); err != nil {
+	if err := s.overrideTimestamps(c, &item, payload.CreatedAt, payload.UpdatedAt); err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_update_budget", err)
 		return
 	}
-	if err := s.db.Preload("Category").First(&item, "id = ?", item.ID).Error; err != nil {
+	if err := s.preloadOwnedCategory(s.scopedDB(c), s.currentUserID(c)).First(&item, "id = ?", item.ID).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_load_budget", err)
 		return
 	}
@@ -519,7 +561,7 @@ func (s *Server) updateBudget(c *gin.Context) {
 }
 
 func (s *Server) deleteBudget(c *gin.Context) {
-	if err := s.db.Delete(&models.Budget{}, "id = ?", c.Param("id")).Error; err != nil {
+	if err := s.scopedDB(c).Delete(&models.Budget{}, "id = ?", c.Param("id")).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_delete_budget", err)
 		return
 	}
@@ -539,7 +581,7 @@ type savingsGoalPayload struct {
 
 func (s *Server) listSavingsGoals(c *gin.Context) {
 	var items []models.SavingsGoal
-	if err := s.db.Order("created_at DESC").Find(&items).Error; err != nil {
+	if err := s.scopedDB(c).Order("created_at DESC").Find(&items).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_list_savings_goals", err)
 		return
 	}
@@ -553,6 +595,7 @@ func (s *Server) createSavingsGoal(c *gin.Context) {
 	}
 	item := models.SavingsGoal{
 		ID:           stringValue(payload.ID),
+		UserID:       s.currentUserID(c),
 		Name:         payload.Name,
 		TargetAmount: payload.TargetAmount,
 		SavedAmount:  payload.SavedAmount,
@@ -561,15 +604,15 @@ func (s *Server) createSavingsGoal(c *gin.Context) {
 		CreatedAt:    timeValue(payload.CreatedAt, time.Now()),
 		UpdatedAt:    timeValue(payload.UpdatedAt, time.Now()),
 	}
-	if err := s.db.Create(&item).Error; err != nil {
+	if err := s.scopedDB(c).Create(&item).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_create_savings_goal", err)
 		return
 	}
-	if err := s.overrideTimestamps(&item, payload.CreatedAt, payload.UpdatedAt); err != nil {
+	if err := s.overrideTimestamps(c, &item, payload.CreatedAt, payload.UpdatedAt); err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_create_savings_goal", err)
 		return
 	}
-	if err := s.db.First(&item, "id = ?", item.ID).Error; err != nil {
+	if err := s.scopedDB(c).First(&item, "id = ?", item.ID).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_load_savings_goal", err)
 		return
 	}
@@ -578,7 +621,7 @@ func (s *Server) createSavingsGoal(c *gin.Context) {
 
 func (s *Server) updateSavingsGoal(c *gin.Context) {
 	var item models.SavingsGoal
-	if err := s.db.First(&item, "id = ?", c.Param("id")).Error; err != nil {
+	if err := s.scopedDB(c).First(&item, "id = ?", c.Param("id")).Error; err != nil {
 		s.respondError(c, http.StatusNotFound, "savings_goal_not_found", err)
 		return
 	}
@@ -593,15 +636,15 @@ func (s *Server) updateSavingsGoal(c *gin.Context) {
 	item.IsActive = boolValue(payload.IsActive, item.IsActive)
 	item.CreatedAt = timeValue(payload.CreatedAt, item.CreatedAt)
 	item.UpdatedAt = timeValue(payload.UpdatedAt, item.UpdatedAt)
-	if err := s.db.Save(&item).Error; err != nil {
+	if err := s.scopedDB(c).Save(&item).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_update_savings_goal", err)
 		return
 	}
-	if err := s.overrideTimestamps(&item, payload.CreatedAt, payload.UpdatedAt); err != nil {
+	if err := s.overrideTimestamps(c, &item, payload.CreatedAt, payload.UpdatedAt); err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_update_savings_goal", err)
 		return
 	}
-	if err := s.db.First(&item, "id = ?", item.ID).Error; err != nil {
+	if err := s.scopedDB(c).First(&item, "id = ?", item.ID).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_load_savings_goal", err)
 		return
 	}
@@ -609,7 +652,7 @@ func (s *Server) updateSavingsGoal(c *gin.Context) {
 }
 
 func (s *Server) deleteSavingsGoal(c *gin.Context) {
-	if err := s.db.Delete(&models.SavingsGoal{}, "id = ?", c.Param("id")).Error; err != nil {
+	if err := s.scopedDB(c).Delete(&models.SavingsGoal{}, "id = ?", c.Param("id")).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_delete_savings_goal", err)
 		return
 	}
@@ -635,7 +678,7 @@ type subscriptionPayload struct {
 
 func (s *Server) listSubscriptions(c *gin.Context) {
 	var items []models.SubscriptionRecord
-	if err := s.db.Order("updated_at DESC").Find(&items).Error; err != nil {
+	if err := s.scopedDB(c).Order("updated_at DESC").Find(&items).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_list_subscriptions", err)
 		return
 	}
@@ -649,6 +692,7 @@ func (s *Server) createSubscription(c *gin.Context) {
 	}
 	item := models.SubscriptionRecord{
 		ID:                       stringValue(payload.ID),
+		UserID:                   s.currentUserID(c),
 		MerchantKey:              payload.MerchantKey,
 		DisplayName:              payload.DisplayName,
 		Label:                    payload.Label,
@@ -663,15 +707,15 @@ func (s *Server) createSubscription(c *gin.Context) {
 		CreatedAt:                timeValue(payload.CreatedAt, time.Now()),
 		UpdatedAt:                timeValue(payload.UpdatedAt, time.Now()),
 	}
-	if err := s.db.Create(&item).Error; err != nil {
+	if err := s.scopedDB(c).Create(&item).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_create_subscription", err)
 		return
 	}
-	if err := s.overrideTimestamps(&item, payload.CreatedAt, payload.UpdatedAt); err != nil {
+	if err := s.overrideTimestamps(c, &item, payload.CreatedAt, payload.UpdatedAt); err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_create_subscription", err)
 		return
 	}
-	if err := s.db.First(&item, "id = ?", item.ID).Error; err != nil {
+	if err := s.scopedDB(c).First(&item, "id = ?", item.ID).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_load_subscription", err)
 		return
 	}
@@ -680,7 +724,7 @@ func (s *Server) createSubscription(c *gin.Context) {
 
 func (s *Server) updateSubscription(c *gin.Context) {
 	var item models.SubscriptionRecord
-	if err := s.db.First(&item, "id = ?", c.Param("id")).Error; err != nil {
+	if err := s.scopedDB(c).First(&item, "id = ?", c.Param("id")).Error; err != nil {
 		s.respondError(c, http.StatusNotFound, "subscription_not_found", err)
 		return
 	}
@@ -701,15 +745,15 @@ func (s *Server) updateSubscription(c *gin.Context) {
 	item.LatestTransactionTitle = payload.LatestTransactionTitle
 	item.CreatedAt = timeValue(payload.CreatedAt, item.CreatedAt)
 	item.UpdatedAt = timeValue(payload.UpdatedAt, item.UpdatedAt)
-	if err := s.db.Save(&item).Error; err != nil {
+	if err := s.scopedDB(c).Save(&item).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_update_subscription", err)
 		return
 	}
-	if err := s.overrideTimestamps(&item, payload.CreatedAt, payload.UpdatedAt); err != nil {
+	if err := s.overrideTimestamps(c, &item, payload.CreatedAt, payload.UpdatedAt); err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_update_subscription", err)
 		return
 	}
-	if err := s.db.First(&item, "id = ?", item.ID).Error; err != nil {
+	if err := s.scopedDB(c).First(&item, "id = ?", item.ID).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_load_subscription", err)
 		return
 	}
@@ -717,7 +761,7 @@ func (s *Server) updateSubscription(c *gin.Context) {
 }
 
 func (s *Server) deleteSubscription(c *gin.Context) {
-	if err := s.db.Delete(&models.SubscriptionRecord{}, "id = ?", c.Param("id")).Error; err != nil {
+	if err := s.scopedDB(c).Delete(&models.SubscriptionRecord{}, "id = ?", c.Param("id")).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_delete_subscription", err)
 		return
 	}
@@ -774,7 +818,7 @@ func parseInt(raw string, fallback int) int {
 	return out
 }
 
-func (s *Server) overrideTimestamps(model any, createdAt, updatedAt *time.Time) error {
+func (s *Server) overrideTimestamps(c *gin.Context, model any, createdAt, updatedAt *time.Time) error {
 	updates := map[string]any{}
 	if createdAt != nil {
 		updates["created_at"] = *createdAt
@@ -785,5 +829,84 @@ func (s *Server) overrideTimestamps(model any, createdAt, updatedAt *time.Time) 
 	if len(updates) == 0 {
 		return nil
 	}
-	return s.db.Model(model).UpdateColumns(updates).Error
+	return s.scopedDB(c).Model(model).UpdateColumns(updates).Error
+}
+
+func (s *Server) authMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userID := s.cfg.DefaultUserID
+
+		if s.verifier.Enabled() {
+			tokenString, err := bearerToken(c.GetHeader("Authorization"))
+			if err != nil {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "missing_authorization", "message": err.Error()})
+				c.Abort()
+				return
+			}
+
+			claims, err := s.verifier.Verify(c.Request.Context(), tokenString)
+			if err != nil {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_authorization", "message": err.Error()})
+				c.Abort()
+				return
+			}
+			userID = claims.Subject
+		}
+
+		c.Set(authenticatedUserIDContextKey, userID)
+
+		if s.cfg.SeedDefaultCategories {
+			if err := seed.EnsureDefaultsForUser(s.db, userID); err != nil {
+				s.respondError(c, http.StatusInternalServerError, "failed_to_seed_default_categories", err)
+				c.Abort()
+				return
+			}
+		}
+
+		c.Next()
+	}
+}
+
+func (s *Server) currentUserID(c *gin.Context) string {
+	if value, ok := c.Get(authenticatedUserIDContextKey); ok {
+		if userID, ok := value.(string); ok && strings.TrimSpace(userID) != "" {
+			return userID
+		}
+	}
+	return s.cfg.DefaultUserID
+}
+
+func (s *Server) scopedDB(c *gin.Context) *gorm.DB {
+	return s.db.Where("user_id = ?", s.currentUserID(c))
+}
+
+func (s *Server) preloadOwnedCategory(db *gorm.DB, userID string) *gorm.DB {
+	return db.Preload("Category", "user_id = ?", userID)
+}
+
+func (s *Server) ensureOwnedCategory(c *gin.Context, categoryID *string) error {
+	if categoryID == nil || strings.TrimSpace(*categoryID) == "" {
+		return nil
+	}
+
+	var category models.Category
+	if err := s.scopedDB(c).First(&category, "id = ?", strings.TrimSpace(*categoryID)).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("category %s does not belong to the authenticated user", strings.TrimSpace(*categoryID))
+		}
+		return err
+	}
+	return nil
+}
+
+func bearerToken(headerValue string) (string, error) {
+	trimmed := strings.TrimSpace(headerValue)
+	if trimmed == "" {
+		return "", backendauth.ErrMissingBearerToken
+	}
+	parts := strings.Fields(trimmed)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || strings.TrimSpace(parts[1]) == "" {
+		return "", fmt.Errorf("authorization header must be formatted as Bearer <token>")
+	}
+	return parts[1], nil
 }
