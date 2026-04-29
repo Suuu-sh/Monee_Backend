@@ -66,49 +66,72 @@ curl http://127.0.0.1:18080/api/v1/summary?range=month
 - Runtime は PostgreSQL を使い、テストだけ SQLite in-memory を使います
 - `SEED_DEFAULT_CATEGORIES=true` なら初回起動時にカテゴリだけを自動投入します
 - 取引・予算・目標のモックデータは backend 側では投入しません
-- Fly.io に持っていく場合もこの Dockerfile をベースにできます
+- production deploy は `render.yaml` と Dockerfile を使います
 
-## Deploy to Fly.io
+## Deploy to Render + Neon
 
-`fly.toml` を使って `monee-backend.fly.dev` へデプロイできます。Fly.io 側では Managed Postgres を使い、`DATABASE_URL` は secret として app に注入します。
+Fly.io の常駐 app / Managed Postgres で料金が出やすいため、低トラフィックの個人利用は次の構成を推奨します。
+
+- API: Render Free Web Service
+- DB: Neon Free Postgres
+
+理由:
+
+- Render Free Web Service は 15 分 idle で sleep しますが、月 750 free instance hours の範囲で動かせます
+- Render Free Postgres は 30 日で expire するため、本番データ用途では避けます
+- Neon Free は Postgres を無料枠で使え、idle 時に compute が scale to zero します
+
+### 1. Neon で Postgres を作る
+
+1. Neon で project を作成します
+2. Connection string をコピーします
+3. Render から接続するため、connection string 末尾に `sslmode=require` が入っていることを確認します
+
+例:
+
+```text
+postgresql://USER:PASSWORD@HOST.neon.tech/DB?sslmode=require
+```
+
+### 2. Render で Blueprint deploy する
+
+この repository には Render Blueprint 用の `render.yaml` を置いてあります。Render Dashboard で Blueprint を作成し、`Suuu-sh/Monee_Backend` を接続してください。
+
+Blueprint 作成時に `DATABASE_URL` の入力を求められるため、Neon の connection string を設定します。
+
+主な設定:
+
+- service 名: `monee-backend`
+- region: `singapore`
+- plan: `free`
+- runtime: `docker`
+- health check: `/readyz`
+- Dockerfile の `CMD ["monee-backend"]` で起動
+
+deploy 後の確認:
 
 ```bash
-cd /Users/yota/Projects/Monee/Backend
-fly auth login
-fly mpg create -n monee-backend-db -o personal -r nrt --plan development --volume-size 10
-fly mpg list -o personal
-fly mpg attach <cluster-id> -a monee-backend
-fly deploy -a monee-backend
+curl https://monee-backend.onrender.com/healthz
+curl https://monee-backend.onrender.com/readyz
 ```
 
 補足:
 
-- app 名は `monee-backend`
-- 公開 URL は `https://monee-backend.fly.dev`
-- app は `nrt` リージョンで 1 台常駐させる設定です
-- 本番では `env.production` の値を埋めなくても、Fly.io 側の `fly.toml` と secret で起動できます
-- deploy 後の確認は `https://monee-backend.fly.dev/healthz` と `https://monee-backend.fly.dev/readyz` を使います
+- Render の Free Web Service は idle 後の初回 request で cold start します
+- Free Web Service の filesystem は ephemeral なので、production では SQLite を使わず Postgres を使います
+- Render の `onrender.com` URL は service 名に基づきます。別 URL が発行された場合は、Monee app の Settings > Backend sync > Backend URL にその URL を入れてください
+- Render Free から外部 DB へ大量通信すると制限対象になり得るため、高頻度同期が必要になったら paid plan か Cloud Run へ移行してください
 
-## GitHub Actions deploy
+### 3. Fly.io の課金を止める
 
-backend repo には `/.github/workflows/fly-deploy.yml` を置いてあり、次の条件で Fly.io へ deploy できます。
+この repository から Fly.io へ自動 deploy する GitHub Actions workflow と `fly.toml` は削除済みです。ただし、既存の Fly.io app / Managed Postgres は repository 変更だけでは停止・削除されません。
 
-- `main` への push
-- `workflow_dispatch`
-- このセットアップを検証するため、現在の作業ブランチ `codex/feature/mobile_backend/019d870d` への push
+Render / Neon への移行とデータ確認が終わったら、Fly.io 側で app と DB を停止または削除してください。
 
-必要な GitHub Actions secret:
-
-- `FLY_API_TOKEN`
-
-repo secret の投入例:
+確認例:
 
 ```bash
-gh secret set FLY_API_TOKEN --repo Suuu-sh/Monee_Backend
-```
-
-手動実行:
-
-```bash
-gh workflow run "Fly Deploy" --repo Suuu-sh/Monee_Backend
+fly apps list
+fly status -a monee-backend
+fly mpg list -o personal
 ```
