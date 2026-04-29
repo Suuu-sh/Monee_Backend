@@ -103,8 +103,8 @@ Render Free の注意:
 確認:
 
 ```bash
-curl https://monee-backend.onrender.com/healthz
-curl https://monee-backend.onrender.com/readyz
+curl https://monee-backend-b8qo.onrender.com/healthz
+curl https://monee-backend-b8qo.onrender.com/readyz
 ```
 
 `/api/v1/*` は Supabase anonymous session の `Authorization: Bearer <access_token>` が必要です。
