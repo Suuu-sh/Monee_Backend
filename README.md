@@ -111,7 +111,7 @@ curl https://monee-backend-b8qo.onrender.com/readyz
 
 ### GitHub Actions から Render deploy する
 
-`.github/workflows/render-deploy.yml` は PR / main push で `go test ./...` を実行し、`main` への push だけ Render deploy hook を呼びます。
+`.github/workflows/render-deploy.yml` は `/Users/yota/Projects/Shared` の reusable workflow (`Suuu-sh/Shared/.github/workflows/render-deploy.yml@main`) を呼び出します。PR / main push で `go test ./...` を実行し、`main` への push だけ Render deploy hook を呼びます。
 
 Render Dashboard の対象 service Settings で Deploy Hook URL を確認し、GitHub repository secret に保存してください。
 
