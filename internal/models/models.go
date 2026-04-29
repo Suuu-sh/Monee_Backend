@@ -9,7 +9,8 @@ import (
 
 type Category struct {
 	ID         string    `gorm:"primaryKey" json:"id"`
-	Slug       string    `gorm:"uniqueIndex;not null" json:"slug"`
+	UserID     string    `gorm:"index;uniqueIndex:idx_categories_user_slug" json:"-"`
+	Slug       string    `gorm:"not null;uniqueIndex:idx_categories_user_slug" json:"slug"`
 	Name       string    `gorm:"not null" json:"name"`
 	Type       string    `gorm:"not null;index" json:"type"`
 	Icon       string    `gorm:"not null" json:"icon"`
@@ -22,6 +23,7 @@ type Category struct {
 
 type Transaction struct {
 	ID                      string    `gorm:"primaryKey" json:"id"`
+	UserID                  string    `gorm:"index" json:"-"`
 	Title                   string    `gorm:"not null" json:"title"`
 	Amount                  float64   `gorm:"not null" json:"amount"`
 	Type                    string    `gorm:"not null;index" json:"type"`
@@ -38,6 +40,7 @@ type Transaction struct {
 
 type Budget struct {
 	ID           string    `gorm:"primaryKey" json:"id"`
+	UserID       string    `gorm:"index" json:"-"`
 	Name         string    `gorm:"not null" json:"name"`
 	Scope        string    `gorm:"not null;index" json:"scope"`
 	MonthlyLimit float64   `gorm:"not null" json:"monthly_limit"`
@@ -50,6 +53,7 @@ type Budget struct {
 
 type SavingsGoal struct {
 	ID           string     `gorm:"primaryKey" json:"id"`
+	UserID       string     `gorm:"index" json:"-"`
 	Name         string     `gorm:"not null" json:"name"`
 	TargetAmount float64    `gorm:"not null" json:"target_amount"`
 	SavedAmount  float64    `gorm:"not null;default:0" json:"saved_amount"`
@@ -61,7 +65,8 @@ type SavingsGoal struct {
 
 type SubscriptionRecord struct {
 	ID                       string     `gorm:"primaryKey" json:"id"`
-	MerchantKey              string     `gorm:"uniqueIndex;not null" json:"merchant_key"`
+	UserID                   string     `gorm:"index;uniqueIndex:idx_subscriptions_user_merchant" json:"-"`
+	MerchantKey              string     `gorm:"not null;uniqueIndex:idx_subscriptions_user_merchant" json:"merchant_key"`
 	DisplayName              string     `gorm:"not null" json:"display_name"`
 	Label                    string     `gorm:"not null" json:"label"`
 	AverageAmount            float64    `gorm:"not null" json:"average_amount"`
@@ -78,6 +83,7 @@ type SubscriptionRecord struct {
 
 type AppPreference struct {
 	ID                     string     `gorm:"primaryKey" json:"id"`
+	UserID                 string     `gorm:"index" json:"-"`
 	CurrencyCode           string     `gorm:"not null" json:"currency_code"`
 	MonthStartDay          int        `gorm:"not null" json:"month_start_day"`
 	IsAISummariesEnabled   bool       `gorm:"not null;default:true" json:"is_ai_summaries_enabled"`

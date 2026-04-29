@@ -64,51 +64,61 @@ curl http://127.0.0.1:18080/api/v1/summary?range=month
 
 ## Notes
 - Runtime は PostgreSQL を使い、テストだけ SQLite in-memory を使います
-- `SEED_DEFAULT_CATEGORIES=true` なら初回起動時にカテゴリだけを自動投入します
+- `SEED_DEFAULT_CATEGORIES=true` なら認証済みユーザーごとに初回カテゴリだけを自動投入します
 - 取引・予算・目標のモックデータは backend 側では投入しません
-- Fly.io に持っていく場合もこの Dockerfile をベースにできます
+- `/api/v1/*` は Supabase Auth の Bearer token を必須にし、データは Supabase user id ごとに分離します
+- production deploy は `render.yaml` と Dockerfile を使います
 
-## Deploy to Fly.io
+## Deploy to Render + existing Supabase
 
-`fly.toml` を使って `monee-backend.fly.dev` へデプロイできます。Fly.io 側では Managed Postgres を使い、`DATABASE_URL` は secret として app に注入します。
+Fly.io の常駐 app / Managed Postgres では料金が出やすいため、Go API だけ Render Free Web Service に移し、DB と Auth は既存 Supabase project を使います。
+
+構成:
+
+```text
+iOS app
+  -> Render Free Web Service / Go API
+  -> Supabase Postgres + Supabase Auth
+```
+
+この repository には Render Blueprint 用の `render.yaml` を置いてあります。Render Dashboard で Blueprint を作成し、`Suuu-sh/Monee_Backend` を接続してください。
+
+Blueprint 作成時に `DATABASE_URL` を入力します。Supabase Dashboard の connection string を使い、Render からの接続では SSL を有効にしてください。
+
+推奨:
+
+- `DATABASE_URL`: Supabase pooler / session mode の connection string
+- `SUPABASE_PROJECT_URL`: `https://azvfsidxfxjnxatjbljm.supabase.co`
+- `SUPABASE_PUBLISHABLE_KEY`: app と同じ publishable key
+- `DATABASE_DRIVER`: `postgres`
+- `SEED_DEFAULT_CATEGORIES`: `true`
+
+Render Free の注意:
+
+- 15 分 idle で sleep し、次の request で起動します
+- sleep 中は Free instance hours を消費しません
+- 起動直後の request は cold start で遅くなることがあります
+- filesystem は ephemeral なので、production では SQLite を使わず Supabase Postgres を使います
+
+確認:
 
 ```bash
-cd /Users/yota/Projects/Monee/Backend
-fly auth login
-fly mpg create -n monee-backend-db -o personal -r nrt --plan development --volume-size 10
+curl https://monee-backend.onrender.com/healthz
+curl https://monee-backend.onrender.com/readyz
+```
+
+`/api/v1/*` は Supabase anonymous session の `Authorization: Bearer <access_token>` が必要です。
+
+## Stop Fly.io deploys
+
+この repository から Fly.io へ自動 deploy する GitHub Actions workflow と `fly.toml` は削除済みです。ただし、既存の Fly.io app / Managed Postgres は repository 変更だけでは停止・削除されません。
+
+Render への移行とデータ確認が終わったら、Fly.io 側で app と DB を停止または削除してください。
+
+確認例:
+
+```bash
+fly apps list
+fly status -a monee-backend
 fly mpg list -o personal
-fly mpg attach <cluster-id> -a monee-backend
-fly deploy -a monee-backend
-```
-
-補足:
-
-- app 名は `monee-backend`
-- 公開 URL は `https://monee-backend.fly.dev`
-- app は `nrt` リージョンで 1 台常駐させる設定です
-- 本番では `env.production` の値を埋めなくても、Fly.io 側の `fly.toml` と secret で起動できます
-- deploy 後の確認は `https://monee-backend.fly.dev/healthz` と `https://monee-backend.fly.dev/readyz` を使います
-
-## GitHub Actions deploy
-
-backend repo には `/.github/workflows/fly-deploy.yml` を置いてあり、次の条件で Fly.io へ deploy できます。
-
-- `main` への push
-- `workflow_dispatch`
-- このセットアップを検証するため、現在の作業ブランチ `codex/feature/mobile_backend/019d870d` への push
-
-必要な GitHub Actions secret:
-
-- `FLY_API_TOKEN`
-
-repo secret の投入例:
-
-```bash
-gh secret set FLY_API_TOKEN --repo Suuu-sh/Monee_Backend
-```
-
-手動実行:
-
-```bash
-gh workflow run "Fly Deploy" --repo Suuu-sh/Monee_Backend
 ```

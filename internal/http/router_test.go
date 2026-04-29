@@ -2,17 +2,20 @@ package http
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Suuu-sh/Monee_Backend/internal/config"
 	"github.com/Suuu-sh/Monee_Backend/internal/database"
 	"github.com/Suuu-sh/Monee_Backend/internal/seed"
+	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
@@ -29,6 +32,7 @@ func testConfig(seedDefaults bool) config.Config {
 func testDB(t *testing.T, seedDefaults bool) *gorm.DB {
 	t.Helper()
 	cfg := testConfig(seedDefaults)
+	cfg.DatabasePath = "file:" + strings.NewReplacer("/", "_", " ", "_").Replace(t.Name()) + "?mode=memory&cache=shared"
 	db, err := database.Open(cfg)
 	if err != nil {
 		t.Fatalf("open db: %v", err)
@@ -44,8 +48,41 @@ func testDB(t *testing.T, seedDefaults bool) *gorm.DB {
 	return db
 }
 
+type fakeAuthenticator map[string]AuthenticatedUser
+
+func (f fakeAuthenticator) Authenticate(_ context.Context, bearerToken string) (AuthenticatedUser, error) {
+	user, ok := f[bearerToken]
+	if !ok {
+		return AuthenticatedUser{}, errUnauthorized
+	}
+	return user, nil
+}
+
+func testRouter(t *testing.T, seedDefaults bool) *gin.Engine {
+	t.Helper()
+	cfg := testConfig(seedDefaults)
+	db := testDB(t, seedDefaults)
+	return NewRouterWithAuthenticator(cfg, db, slog.Default(), fakeAuthenticator{
+		"user-a-token": {ID: "user-a"},
+		"user-b-token": {ID: "user-b"},
+	})
+}
+
+func authedRequest(method string, target string, body io.Reader) *http.Request {
+	return authedRequestFor("user-a-token", method, target, body)
+}
+
+func authedRequestFor(token string, method string, target string, body io.Reader) *http.Request {
+	req := httptest.NewRequest(method, target, body)
+	req.Header.Set("Authorization", "Bearer "+token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	return req
+}
+
 func TestHealthz(t *testing.T) {
-	router := NewRouter(testConfig(true), testDB(t, true), slog.Default())
+	router := testRouter(t, true)
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
@@ -54,9 +91,19 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
-func TestListSeededCategories(t *testing.T) {
-	router := NewRouter(testConfig(true), testDB(t, true), slog.Default())
+func TestAPIRequiresAuthorization(t *testing.T) {
+	router := testRouter(t, true)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/categories", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestListSeededCategories(t *testing.T) {
+	router := testRouter(t, true)
+	req := authedRequest(http.MethodGet, "/api/v1/categories", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -74,13 +121,12 @@ func TestListSeededCategories(t *testing.T) {
 }
 
 func TestCreateCategoryWithProvidedIDAndTimestamps(t *testing.T) {
-	router := NewRouter(testConfig(false), testDB(t, false), slog.Default())
+	router := testRouter(t, false)
 
 	createdAt := time.Date(2026, 4, 10, 8, 0, 0, 0, time.UTC)
 	updatedAt := time.Date(2026, 4, 11, 9, 30, 0, 0, time.UTC)
 	body := bytes.NewBufferString(`{"id":"11111111-1111-1111-1111-111111111111","slug":"groceries","name":"Groceries","type":"expense","icon":"cart.fill","color_token":"mint","order":99,"created_at":"2026-04-10T08:00:00Z","updated_at":"2026-04-11T09:30:00Z"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/categories", body)
-	req.Header.Set("Content-Type", "application/json")
+	req := authedRequest(http.MethodPost, "/api/v1/categories", body)
 	w := httptest.NewRecorder()
 
 	router.ServeHTTP(w, req)
@@ -104,12 +150,44 @@ func TestCreateCategoryWithProvidedIDAndTimestamps(t *testing.T) {
 	}
 }
 
+func TestCategoriesAreScopedByAuthenticatedUser(t *testing.T) {
+	router := testRouter(t, false)
+
+	userACategory := bytes.NewBufferString(`{"id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","slug":"shared","name":"Shared A","type":"expense","icon":"tag.fill","color_token":"mint","order":1}`)
+	userAReq := authedRequestFor("user-a-token", http.MethodPost, "/api/v1/categories", userACategory)
+	userARes := httptest.NewRecorder()
+	router.ServeHTTP(userARes, userAReq)
+	if userARes.Code != http.StatusCreated {
+		t.Fatalf("expected user A category create 201, got %d: %s", userARes.Code, userARes.Body.String())
+	}
+
+	userBCategory := bytes.NewBufferString(`{"id":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb","slug":"shared","name":"Shared B","type":"expense","icon":"tag.fill","color_token":"mint","order":1}`)
+	userBReq := authedRequestFor("user-b-token", http.MethodPost, "/api/v1/categories", userBCategory)
+	userBRes := httptest.NewRecorder()
+	router.ServeHTTP(userBRes, userBReq)
+	if userBRes.Code != http.StatusCreated {
+		t.Fatalf("expected same slug to be allowed for user B, got %d: %s", userBRes.Code, userBRes.Body.String())
+	}
+
+	listReq := authedRequestFor("user-a-token", http.MethodGet, "/api/v1/categories", nil)
+	listRes := httptest.NewRecorder()
+	router.ServeHTTP(listRes, listReq)
+	if listRes.Code != http.StatusOK {
+		t.Fatalf("expected list 200, got %d: %s", listRes.Code, listRes.Body.String())
+	}
+	if strings.Contains(listRes.Body.String(), "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb") {
+		t.Fatalf("user A list leaked user B category: %s", listRes.Body.String())
+	}
+	if !strings.Contains(listRes.Body.String(), "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa") {
+		t.Fatalf("user A list should include user A category: %s", listRes.Body.String())
+	}
+}
+
 func TestCreatePreferenceAndSubscriptionWithProvidedIDs(t *testing.T) {
-	router := NewRouter(testConfig(false), testDB(t, false), slog.Default())
+	router := testRouter(t, false)
 
 	preferenceBody := bytes.NewBufferString(`{"id":"22222222-2222-2222-2222-222222222222","currency_code":"JPY","month_start_day":1,"is_ai_summaries_enabled":true,"appearance_raw":"system","language_raw":"ja","home_summary_range_raw":"month","budget_warning_threshold":0.8,"seed_scenario_raw":"balanced"}`)
-	preferenceReq := httptest.NewRequest(http.MethodPost, "/api/v1/preferences", preferenceBody)
-	preferenceReq.Header.Set("Content-Type", "application/json")
+	preferenceReq := authedRequest(http.MethodPost, "/api/v1/preferences", preferenceBody)
 	preferenceRes := httptest.NewRecorder()
 	router.ServeHTTP(preferenceRes, preferenceReq)
 	if preferenceRes.Code != http.StatusCreated {
@@ -117,15 +195,14 @@ func TestCreatePreferenceAndSubscriptionWithProvidedIDs(t *testing.T) {
 	}
 
 	subscriptionBody := bytes.NewBufferString(`{"id":"33333333-3333-3333-3333-333333333333","merchant_key":"manual-netflix","display_name":"Netflix","label":"Netflix","average_amount":1490,"cadence":"monthly","state":"active","monthly_equivalent_amount":1490,"yearly_equivalent_amount":17880}`)
-	subscriptionReq := httptest.NewRequest(http.MethodPost, "/api/v1/subscriptions", subscriptionBody)
-	subscriptionReq.Header.Set("Content-Type", "application/json")
+	subscriptionReq := authedRequest(http.MethodPost, "/api/v1/subscriptions", subscriptionBody)
 	subscriptionRes := httptest.NewRecorder()
 	router.ServeHTTP(subscriptionRes, subscriptionReq)
 	if subscriptionRes.Code != http.StatusCreated {
 		t.Fatalf("expected subscription create 201, got %d: %s", subscriptionRes.Code, subscriptionRes.Body.String())
 	}
 
-	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/subscriptions", nil)
+	listReq := authedRequest(http.MethodGet, "/api/v1/subscriptions", nil)
 	listRes := httptest.NewRecorder()
 	router.ServeHTTP(listRes, listReq)
 	if listRes.Code != http.StatusOK {
