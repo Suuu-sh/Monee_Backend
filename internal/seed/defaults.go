@@ -5,6 +5,7 @@ import (
 
 	"github.com/Suuu-sh/Monee_Backend/internal/models"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var excludedDefaultCategorySlugs = []string{"cafe", "shopping", "subscription"}
@@ -43,7 +44,7 @@ func ensureDefaults(db *gorm.DB, userID string) error {
 			{UserID: userID, Slug: "other_income", Name: "その他", Type: "income", Icon: "plus.circle.fill", ColorToken: "sky", Order: 14, IsActive: true, CreatedAt: now, UpdatedAt: now},
 		}
 
-		if err := db.Create(&categories).Error; err != nil {
+		if err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&categories).Error; err != nil {
 			return err
 		}
 	}
