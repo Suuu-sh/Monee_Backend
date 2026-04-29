@@ -118,6 +118,8 @@ Render Dashboard の対象 service Settings で Deploy Hook URL を確認し、G
 - secret name: `RENDER_DEPLOY_HOOK_URL`
 - value: Render の Deploy Hook URL
 
+Render service の deploy branch は `main` にしてください。
+
 Render 側の Auto-Deploy を有効にしたままにすると、main merge 時に Render 自動 deploy と GitHub Actions deploy hook の両方が動く可能性があります。GitHub Actions 経由に統一する場合は、Render service の Auto-Deploy を無効にしてください。
 
 ## Stop Fly.io deploys
