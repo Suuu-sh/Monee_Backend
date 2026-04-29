@@ -51,14 +51,18 @@ func openPostgres(databaseURL string) (*gorm.DB, error) {
 func Migrate(db *gorm.DB) error {
 	dropLegacyUniqueIndexes(db)
 
-	return db.AutoMigrate(
+	if err := db.AutoMigrate(
 		&models.Category{},
 		&models.Transaction{},
 		&models.Budget{},
 		&models.SavingsGoal{},
 		&models.SubscriptionRecord{},
 		&models.AppPreference{},
-	)
+	); err != nil {
+		return err
+	}
+
+	return ApplySecurityPolicies(db)
 }
 
 func dropLegacyUniqueIndexes(db *gorm.DB) {
@@ -76,4 +80,37 @@ func dropLegacyUniqueIndexes(db *gorm.DB) {
 			_ = db.Migrator().DropIndex(item.model, item.name)
 		}
 	}
+}
+
+func ApplySecurityPolicies(db *gorm.DB) error {
+	if db.Dialector.Name() != "postgres" {
+		return nil
+	}
+
+	for _, table := range []string{
+		"categories",
+		"transactions",
+		"budgets",
+		"savings_goals",
+		"subscription_records",
+		"app_preferences",
+	} {
+		if err := db.Exec(fmt.Sprintf(`ALTER TABLE %s ENABLE ROW LEVEL SECURITY`, table)).Error; err != nil {
+			return fmt.Errorf("enable row level security for %s: %w", table, err)
+		}
+		if err := db.Exec(fmt.Sprintf(`ALTER TABLE %s FORCE ROW LEVEL SECURITY`, table)).Error; err != nil {
+			return fmt.Errorf("force row level security for %s: %w", table, err)
+		}
+		if err := db.Exec(fmt.Sprintf(`DROP POLICY IF EXISTS %s_user_isolation ON %s`, table, table)).Error; err != nil {
+			return fmt.Errorf("drop user isolation policy for %s: %w", table, err)
+		}
+		if err := db.Exec(fmt.Sprintf(`
+CREATE POLICY %s_user_isolation ON %s
+USING (user_id = current_setting('app.current_user_id', true))
+WITH CHECK (user_id = current_setting('app.current_user_id', true))`, table, table)).Error; err != nil {
+			return fmt.Errorf("create user isolation policy for %s: %w", table, err)
+		}
+	}
+
+	return nil
 }
