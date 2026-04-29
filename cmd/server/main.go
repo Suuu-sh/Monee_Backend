@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -30,7 +31,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if cfg.SeedDefaultCategories {
+	if cfg.SeedDefaultCategories && !isPostgresDriver(cfg.DatabaseDriver) {
 		if err := seed.EnsureDefaults(db); err != nil {
 			logger.Error("failed to seed default categories", "error", err)
 			os.Exit(1)
@@ -65,5 +66,14 @@ func main() {
 	if err := server.Shutdown(ctx); err != nil {
 		logger.Error("graceful shutdown failed", "error", err)
 		os.Exit(1)
+	}
+}
+
+func isPostgresDriver(driver string) bool {
+	switch strings.ToLower(strings.TrimSpace(driver)) {
+	case "postgres", "postgresql":
+		return true
+	default:
+		return false
 	}
 }
