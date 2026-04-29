@@ -9,40 +9,13 @@ on:
       - main
   workflow_dispatch:
 
-concurrency:
-  group: render-deploy-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  test:
-    name: Go tests
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Run tests
-        run: go test ./...
-
-  deploy:
-    name: Trigger Render deploy
-    needs: test
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    steps:
-      - name: Trigger Render deploy hook
-        env:
-          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
-        run: |
-          if [ -z "$RENDER_DEPLOY_HOOK_URL" ]; then
-            echo "RENDER_DEPLOY_HOOK_URL repository secret is required." >&2
-            exit 1
-          fi
-
-          curl --fail --show-error --silent --request POST "$RENDER_DEPLOY_HOOK_URL"
+  render:
+    name: Shared Render deploy workflow
+    uses: Suuu-sh/Shared/.github/workflows/render-deploy.yml@main
+    with:
+      go-version-file: go.mod
+      test-command: go test ./...
+      deploy-ref: refs/heads/main
+    secrets:
+      render_deploy_hook_url: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
