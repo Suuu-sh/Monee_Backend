@@ -109,6 +109,19 @@ curl https://monee-backend-b8qo.onrender.com/readyz
 
 `/api/v1/*` は Supabase anonymous session の `Authorization: Bearer <access_token>` が必要です。
 
+### GitHub Actions から Render deploy する
+
+`.github/workflows/render-deploy.yml` は PR / main push で `go test ./...` を実行し、`main` への push だけ Render deploy hook を呼びます。
+
+Render Dashboard の対象 service Settings で Deploy Hook URL を確認し、GitHub repository secret に保存してください。
+
+- secret name: `RENDER_DEPLOY_HOOK_URL`
+- value: Render の Deploy Hook URL
+
+Render service の deploy branch は `main` にしてください。
+
+Render 側の Auto-Deploy を有効にしたままにすると、main merge 時に Render 自動 deploy と GitHub Actions deploy hook の両方が動く可能性があります。GitHub Actions 経由に統一する場合は、Render service の Auto-Deploy を無効にしてください。
+
 ## Stop Fly.io deploys
 
 この repository から Fly.io へ自動 deploy する GitHub Actions workflow と `fly.toml` は削除済みです。ただし、既存の Fly.io app / Managed Postgres は repository 変更だけでは停止・削除されません。
