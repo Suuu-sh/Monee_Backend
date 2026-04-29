@@ -49,6 +49,8 @@ func openPostgres(databaseURL string) (*gorm.DB, error) {
 }
 
 func Migrate(db *gorm.DB) error {
+	dropLegacyUniqueIndexes(db)
+
 	return db.AutoMigrate(
 		&models.Category{},
 		&models.Transaction{},
@@ -57,4 +59,21 @@ func Migrate(db *gorm.DB) error {
 		&models.SubscriptionRecord{},
 		&models.AppPreference{},
 	)
+}
+
+func dropLegacyUniqueIndexes(db *gorm.DB) {
+	// User scoping changed globally unique natural keys into per-user keys.
+	// AutoMigrate creates the new composite indexes but intentionally does not
+	// remove old indexes, so best-effort drop the legacy single-column indexes.
+	for _, item := range []struct {
+		model any
+		name  string
+	}{
+		{model: &models.Category{}, name: "idx_categories_slug"},
+		{model: &models.SubscriptionRecord{}, name: "idx_subscription_records_merchant_key"},
+	} {
+		if db.Migrator().HasIndex(item.model, item.name) {
+			_ = db.Migrator().DropIndex(item.model, item.name)
+		}
+	}
 }

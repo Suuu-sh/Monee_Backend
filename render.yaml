@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: monee-backend
+    runtime: docker
+    plan: free
+    region: singapore
+    healthCheckPath: /readyz
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: PORT
+        value: "8080"
+      - key: DATABASE_DRIVER
+        value: postgres
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_PROJECT_URL
+        value: https://azvfsidxfxjnxatjbljm.supabase.co
+      - key: SUPABASE_PUBLISHABLE_KEY
+        value: sb_publishable_9ou0ZIPni61hlNk6FEklLQ_dcyZK279
+      - key: SEED_DEFAULT_CATEGORIES
+        value: "true"

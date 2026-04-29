@@ -16,6 +16,10 @@ func NewSummaryService(db *gorm.DB) *SummaryService {
 }
 
 func (s *SummaryService) Build(rangeKey string, now time.Time) (models.Summary, error) {
+	return s.BuildForUser(rangeKey, now, "")
+}
+
+func (s *SummaryService) BuildForUser(rangeKey string, now time.Time, userID string) (models.Summary, error) {
 	var summary models.Summary
 	var start, end *time.Time
 
@@ -25,17 +29,29 @@ func (s *SummaryService) Build(rangeKey string, now time.Time) (models.Summary, 
 	}
 
 	query := s.db.Model(&models.Transaction{})
+	if userID != "" {
+		query = query.Where("user_id = ?", userID)
+	}
 	if start != nil && end != nil {
 		query = query.Where("date >= ? AND date < ?", *start, *end)
 	}
 
 	var transactions []models.Transaction
-	if err := query.Preload("Category").Order("date DESC").Limit(10).Find(&transactions).Error; err != nil {
+	preloadQuery := query
+	if userID != "" {
+		preloadQuery = preloadQuery.Preload("Category", "user_id = ?", userID)
+	} else {
+		preloadQuery = preloadQuery.Preload("Category")
+	}
+	if err := preloadQuery.Order("date DESC").Limit(10).Find(&transactions).Error; err != nil {
 		return summary, err
 	}
 
 	var allScoped []models.Transaction
 	countQuery := s.db.Model(&models.Transaction{})
+	if userID != "" {
+		countQuery = countQuery.Where("user_id = ?", userID)
+	}
 	if start != nil && end != nil {
 		countQuery = countQuery.Where("date >= ? AND date < ?", *start, *end)
 	}

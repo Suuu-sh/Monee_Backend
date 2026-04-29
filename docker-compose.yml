@@ -32,6 +32,8 @@ services:
       DATABASE_DRIVER: ${DATABASE_DRIVER:-postgres}
       DATABASE_URL: postgres://${POSTGRES_USER:-monee}:${POSTGRES_PASSWORD:-monee}@postgres:5432/${POSTGRES_DB:-monee}?sslmode=disable
       SEED_DEFAULT_CATEGORIES: "${SEED_DEFAULT_CATEGORIES:-true}"
+      SUPABASE_PROJECT_URL: "${SUPABASE_PROJECT_URL:-https://azvfsidxfxjnxatjbljm.supabase.co}"
+      SUPABASE_PUBLISHABLE_KEY: "${SUPABASE_PUBLISHABLE_KEY:-sb_publishable_9ou0ZIPni61hlNk6FEklLQ_dcyZK279}"
     ports:
       - "${HOST_PORT:-18080}:8080"
     restart: unless-stopped

@@ -1,6 +1,7 @@
 package http
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/Suuu-sh/Monee_Backend/internal/config"
 	"github.com/Suuu-sh/Monee_Backend/internal/models"
+	"github.com/Suuu-sh/Monee_Backend/internal/seed"
 	"github.com/Suuu-sh/Monee_Backend/internal/service"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -21,9 +23,14 @@ type Server struct {
 	db             *gorm.DB
 	logger         *slog.Logger
 	summaryService *service.SummaryService
+	authenticator  Authenticator
 }
 
 func NewRouter(cfg config.Config, db *gorm.DB, logger *slog.Logger) *gin.Engine {
+	return NewRouterWithAuthenticator(cfg, db, logger, NewSupabaseAuthenticator(cfg, logger))
+}
+
+func NewRouterWithAuthenticator(cfg config.Config, db *gorm.DB, logger *slog.Logger, authenticator Authenticator) *gin.Engine {
 	if cfg.AppEnv == "production" {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -40,12 +47,18 @@ func NewRouter(cfg config.Config, db *gorm.DB, logger *slog.Logger) *gin.Engine 
 		MaxAge:           12 * time.Hour,
 	}))
 
-	server := &Server{cfg: cfg, db: db, logger: logger, summaryService: service.NewSummaryService(db)}
+	server := &Server{
+		cfg:            cfg,
+		db:             db,
+		logger:         logger,
+		summaryService: service.NewSummaryService(db),
+		authenticator:  authenticator,
+	}
 
 	router.GET("/healthz", server.healthz)
 	router.GET("/readyz", server.readyz)
 
-	api := router.Group("/api/v1")
+	api := router.Group("/api/v1", server.requireAuth)
 	{
 		api.GET("/summary", server.getSummary)
 
@@ -100,9 +113,59 @@ func (s *Server) readyz(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ready"})
 }
 
+func (s *Server) requireAuth(c *gin.Context) {
+	scheme, token, ok := strings.Cut(strings.TrimSpace(c.GetHeader("Authorization")), " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") || strings.TrimSpace(token) == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing_authorization", "message": "Authorization bearer token is required"})
+		c.Abort()
+		return
+	}
+	token = strings.TrimSpace(token)
+
+	if s.authenticator == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "auth_not_configured", "message": "Supabase authentication is not configured"})
+		c.Abort()
+		return
+	}
+
+	user, err := s.authenticator.Authenticate(c.Request.Context(), token)
+	if err != nil {
+		if !errors.Is(err, errUnauthorized) {
+			s.logger.Warn("failed to authenticate request", "error", err)
+		}
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_authorization", "message": "Authorization bearer token is invalid"})
+		c.Abort()
+		return
+	}
+
+	if s.cfg.SeedDefaultCategories {
+		if err := seed.EnsureDefaultsForUser(s.db, user.ID); err != nil {
+			s.respondError(c, http.StatusInternalServerError, "failed_to_seed_user_defaults", err)
+			c.Abort()
+			return
+		}
+	}
+
+	c.Set("authenticated_user", user)
+	c.Next()
+}
+
+func authenticatedUser(c *gin.Context) AuthenticatedUser {
+	value, exists := c.Get("authenticated_user")
+	if !exists {
+		return AuthenticatedUser{}
+	}
+	user, _ := value.(AuthenticatedUser)
+	return user
+}
+
+func authenticatedUserID(c *gin.Context) string {
+	return authenticatedUser(c).ID
+}
+
 func (s *Server) getSummary(c *gin.Context) {
 	rangeKey := c.DefaultQuery("range", "month")
-	summary, err := s.summaryService.Build(rangeKey, time.Now())
+	summary, err := s.summaryService.BuildForUser(rangeKey, time.Now(), authenticatedUserID(c))
 	if err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_build_summary", err)
 		return
@@ -129,7 +192,8 @@ type appPreferencePayload struct {
 
 func (s *Server) listPreferences(c *gin.Context) {
 	var items []models.AppPreference
-	if err := s.db.Order("created_at ASC").Find(&items).Error; err != nil {
+	userID := authenticatedUserID(c)
+	if err := s.db.Where("user_id = ?", userID).Order("created_at ASC").Find(&items).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_list_preferences", err)
 		return
 	}
@@ -143,6 +207,7 @@ func (s *Server) createPreference(c *gin.Context) {
 	}
 
 	item := models.AppPreference{
+		UserID:                 authenticatedUserID(c),
 		ID:                     stringValue(payload.ID),
 		CurrencyCode:           payload.CurrencyCode,
 		MonthStartDay:          payload.MonthStartDay,
@@ -166,7 +231,7 @@ func (s *Server) createPreference(c *gin.Context) {
 		s.respondError(c, http.StatusBadRequest, "failed_to_create_preference", err)
 		return
 	}
-	if err := s.db.First(&item, "id = ?", item.ID).Error; err != nil {
+	if err := s.db.First(&item, "id = ? AND user_id = ?", item.ID, item.UserID).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_load_preference", err)
 		return
 	}
@@ -175,7 +240,8 @@ func (s *Server) createPreference(c *gin.Context) {
 
 func (s *Server) updatePreference(c *gin.Context) {
 	var item models.AppPreference
-	if err := s.db.First(&item, "id = ?", c.Param("id")).Error; err != nil {
+	userID := authenticatedUserID(c)
+	if err := s.db.First(&item, "id = ? AND user_id = ?", c.Param("id"), userID).Error; err != nil {
 		s.respondError(c, http.StatusNotFound, "preference_not_found", err)
 		return
 	}
@@ -207,7 +273,7 @@ func (s *Server) updatePreference(c *gin.Context) {
 		s.respondError(c, http.StatusBadRequest, "failed_to_update_preference", err)
 		return
 	}
-	if err := s.db.First(&item, "id = ?", item.ID).Error; err != nil {
+	if err := s.db.First(&item, "id = ? AND user_id = ?", item.ID, userID).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_load_preference", err)
 		return
 	}
@@ -215,7 +281,8 @@ func (s *Server) updatePreference(c *gin.Context) {
 }
 
 func (s *Server) deletePreference(c *gin.Context) {
-	if err := s.db.Delete(&models.AppPreference{}, "id = ?", c.Param("id")).Error; err != nil {
+	userID := authenticatedUserID(c)
+	if err := s.db.Delete(&models.AppPreference{}, "id = ? AND user_id = ?", c.Param("id"), userID).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_delete_preference", err)
 		return
 	}
@@ -237,7 +304,9 @@ type categoryPayload struct {
 
 func (s *Server) listCategories(c *gin.Context) {
 	var categories []models.Category
+	userID := authenticatedUserID(c)
 	query := s.db.
+		Where("user_id = ?", userID).
 		Order(clause.OrderByColumn{Column: clause.Column{Name: "order"}}).
 		Order(clause.OrderByColumn{Column: clause.Column{Name: "created_at"}})
 	if categoryType := strings.TrimSpace(c.Query("type")); categoryType != "" {
@@ -256,6 +325,7 @@ func (s *Server) createCategory(c *gin.Context) {
 		return
 	}
 	item := models.Category{
+		UserID:     authenticatedUserID(c),
 		ID:         stringValue(payload.ID),
 		Slug:       payload.Slug,
 		Name:       payload.Name,
@@ -275,7 +345,7 @@ func (s *Server) createCategory(c *gin.Context) {
 		s.respondError(c, http.StatusBadRequest, "failed_to_create_category", err)
 		return
 	}
-	if err := s.db.First(&item, "id = ?", item.ID).Error; err != nil {
+	if err := s.db.First(&item, "id = ? AND user_id = ?", item.ID, item.UserID).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_load_category", err)
 		return
 	}
@@ -284,7 +354,8 @@ func (s *Server) createCategory(c *gin.Context) {
 
 func (s *Server) updateCategory(c *gin.Context) {
 	var item models.Category
-	if err := s.db.First(&item, "id = ?", c.Param("id")).Error; err != nil {
+	userID := authenticatedUserID(c)
+	if err := s.db.First(&item, "id = ? AND user_id = ?", c.Param("id"), userID).Error; err != nil {
 		s.respondError(c, http.StatusNotFound, "category_not_found", err)
 		return
 	}
@@ -309,7 +380,7 @@ func (s *Server) updateCategory(c *gin.Context) {
 		s.respondError(c, http.StatusBadRequest, "failed_to_update_category", err)
 		return
 	}
-	if err := s.db.First(&item, "id = ?", item.ID).Error; err != nil {
+	if err := s.db.First(&item, "id = ? AND user_id = ?", item.ID, userID).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_load_category", err)
 		return
 	}
@@ -317,7 +388,8 @@ func (s *Server) updateCategory(c *gin.Context) {
 }
 
 func (s *Server) deleteCategory(c *gin.Context) {
-	if err := s.db.Delete(&models.Category{}, "id = ?", c.Param("id")).Error; err != nil {
+	userID := authenticatedUserID(c)
+	if err := s.db.Delete(&models.Category{}, "id = ? AND user_id = ?", c.Param("id"), userID).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_delete_category", err)
 		return
 	}
@@ -341,7 +413,12 @@ type transactionPayload struct {
 
 func (s *Server) listTransactions(c *gin.Context) {
 	var items []models.Transaction
-	query := s.db.Preload("Category").Order("date DESC").Order("created_at DESC")
+	userID := authenticatedUserID(c)
+	query := s.db.
+		Where("user_id = ?", userID).
+		Preload("Category", "user_id = ?", userID).
+		Order("date DESC").
+		Order("created_at DESC")
 	if txType := strings.TrimSpace(c.Query("type")); txType != "" {
 		query = query.Where("type = ?", txType)
 	}
@@ -363,7 +440,13 @@ func (s *Server) createTransaction(c *gin.Context) {
 	if !bindJSON(c, &payload) {
 		return
 	}
+	userID := authenticatedUserID(c)
+	categoryID, ok := s.validatedCategoryID(c, userID, payload.CategoryID)
+	if !ok {
+		return
+	}
 	item := models.Transaction{
+		UserID:                  userID,
 		ID:                      stringValue(payload.ID),
 		Title:                   payload.Title,
 		Amount:                  payload.Amount,
@@ -371,7 +454,7 @@ func (s *Server) createTransaction(c *gin.Context) {
 		Date:                    payload.Date,
 		Note:                    payload.Note,
 		MerchantName:            payload.MerchantName,
-		CategoryID:              payload.CategoryID,
+		CategoryID:              categoryID,
 		IsSubscriptionCandidate: boolValue(payload.IsSubscriptionCandidate, false),
 		RecurrenceHint:          payload.RecurrenceHint,
 		CreatedAt:               timeValue(payload.CreatedAt, time.Now()),
@@ -385,7 +468,7 @@ func (s *Server) createTransaction(c *gin.Context) {
 		s.respondError(c, http.StatusBadRequest, "failed_to_create_transaction", err)
 		return
 	}
-	if err := s.db.Preload("Category").First(&item, "id = ?", item.ID).Error; err != nil {
+	if err := s.db.Preload("Category", "user_id = ?", userID).First(&item, "id = ? AND user_id = ?", item.ID, userID).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_load_transaction", err)
 		return
 	}
@@ -394,12 +477,17 @@ func (s *Server) createTransaction(c *gin.Context) {
 
 func (s *Server) updateTransaction(c *gin.Context) {
 	var item models.Transaction
-	if err := s.db.First(&item, "id = ?", c.Param("id")).Error; err != nil {
+	userID := authenticatedUserID(c)
+	if err := s.db.First(&item, "id = ? AND user_id = ?", c.Param("id"), userID).Error; err != nil {
 		s.respondError(c, http.StatusNotFound, "transaction_not_found", err)
 		return
 	}
 	var payload transactionPayload
 	if !bindJSON(c, &payload) {
+		return
+	}
+	categoryID, ok := s.validatedCategoryID(c, userID, payload.CategoryID)
+	if !ok {
 		return
 	}
 	item.Title = payload.Title
@@ -408,7 +496,7 @@ func (s *Server) updateTransaction(c *gin.Context) {
 	item.Date = payload.Date
 	item.Note = payload.Note
 	item.MerchantName = payload.MerchantName
-	item.CategoryID = payload.CategoryID
+	item.CategoryID = categoryID
 	item.IsSubscriptionCandidate = boolValue(payload.IsSubscriptionCandidate, item.IsSubscriptionCandidate)
 	item.RecurrenceHint = payload.RecurrenceHint
 	item.CreatedAt = timeValue(payload.CreatedAt, item.CreatedAt)
@@ -421,7 +509,7 @@ func (s *Server) updateTransaction(c *gin.Context) {
 		s.respondError(c, http.StatusBadRequest, "failed_to_update_transaction", err)
 		return
 	}
-	if err := s.db.Preload("Category").First(&item, "id = ?", item.ID).Error; err != nil {
+	if err := s.db.Preload("Category", "user_id = ?", userID).First(&item, "id = ? AND user_id = ?", item.ID, userID).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_load_transaction", err)
 		return
 	}
@@ -429,7 +517,8 @@ func (s *Server) updateTransaction(c *gin.Context) {
 }
 
 func (s *Server) deleteTransaction(c *gin.Context) {
-	if err := s.db.Delete(&models.Transaction{}, "id = ?", c.Param("id")).Error; err != nil {
+	userID := authenticatedUserID(c)
+	if err := s.db.Delete(&models.Transaction{}, "id = ? AND user_id = ?", c.Param("id"), userID).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_delete_transaction", err)
 		return
 	}
@@ -449,7 +538,8 @@ type budgetPayload struct {
 
 func (s *Server) listBudgets(c *gin.Context) {
 	var items []models.Budget
-	if err := s.db.Preload("Category").Order("created_at DESC").Find(&items).Error; err != nil {
+	userID := authenticatedUserID(c)
+	if err := s.db.Where("user_id = ?", userID).Preload("Category", "user_id = ?", userID).Order("created_at DESC").Find(&items).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_list_budgets", err)
 		return
 	}
@@ -461,12 +551,18 @@ func (s *Server) createBudget(c *gin.Context) {
 	if !bindJSON(c, &payload) {
 		return
 	}
+	userID := authenticatedUserID(c)
+	categoryID, ok := s.validatedCategoryID(c, userID, payload.CategoryID)
+	if !ok {
+		return
+	}
 	item := models.Budget{
+		UserID:       userID,
 		ID:           stringValue(payload.ID),
 		Name:         payload.Name,
 		Scope:        payload.Scope,
 		MonthlyLimit: payload.MonthlyLimit,
-		CategoryID:   payload.CategoryID,
+		CategoryID:   categoryID,
 		IsActive:     boolValue(payload.IsActive, true),
 		CreatedAt:    timeValue(payload.CreatedAt, time.Now()),
 		UpdatedAt:    timeValue(payload.UpdatedAt, time.Now()),
@@ -479,7 +575,7 @@ func (s *Server) createBudget(c *gin.Context) {
 		s.respondError(c, http.StatusBadRequest, "failed_to_create_budget", err)
 		return
 	}
-	if err := s.db.Preload("Category").First(&item, "id = ?", item.ID).Error; err != nil {
+	if err := s.db.Preload("Category", "user_id = ?", userID).First(&item, "id = ? AND user_id = ?", item.ID, userID).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_load_budget", err)
 		return
 	}
@@ -488,7 +584,8 @@ func (s *Server) createBudget(c *gin.Context) {
 
 func (s *Server) updateBudget(c *gin.Context) {
 	var item models.Budget
-	if err := s.db.First(&item, "id = ?", c.Param("id")).Error; err != nil {
+	userID := authenticatedUserID(c)
+	if err := s.db.First(&item, "id = ? AND user_id = ?", c.Param("id"), userID).Error; err != nil {
 		s.respondError(c, http.StatusNotFound, "budget_not_found", err)
 		return
 	}
@@ -496,10 +593,14 @@ func (s *Server) updateBudget(c *gin.Context) {
 	if !bindJSON(c, &payload) {
 		return
 	}
+	categoryID, ok := s.validatedCategoryID(c, userID, payload.CategoryID)
+	if !ok {
+		return
+	}
 	item.Name = payload.Name
 	item.Scope = payload.Scope
 	item.MonthlyLimit = payload.MonthlyLimit
-	item.CategoryID = payload.CategoryID
+	item.CategoryID = categoryID
 	item.IsActive = boolValue(payload.IsActive, item.IsActive)
 	item.CreatedAt = timeValue(payload.CreatedAt, item.CreatedAt)
 	item.UpdatedAt = timeValue(payload.UpdatedAt, item.UpdatedAt)
@@ -511,7 +612,7 @@ func (s *Server) updateBudget(c *gin.Context) {
 		s.respondError(c, http.StatusBadRequest, "failed_to_update_budget", err)
 		return
 	}
-	if err := s.db.Preload("Category").First(&item, "id = ?", item.ID).Error; err != nil {
+	if err := s.db.Preload("Category", "user_id = ?", userID).First(&item, "id = ? AND user_id = ?", item.ID, userID).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_load_budget", err)
 		return
 	}
@@ -519,7 +620,8 @@ func (s *Server) updateBudget(c *gin.Context) {
 }
 
 func (s *Server) deleteBudget(c *gin.Context) {
-	if err := s.db.Delete(&models.Budget{}, "id = ?", c.Param("id")).Error; err != nil {
+	userID := authenticatedUserID(c)
+	if err := s.db.Delete(&models.Budget{}, "id = ? AND user_id = ?", c.Param("id"), userID).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_delete_budget", err)
 		return
 	}
@@ -539,7 +641,8 @@ type savingsGoalPayload struct {
 
 func (s *Server) listSavingsGoals(c *gin.Context) {
 	var items []models.SavingsGoal
-	if err := s.db.Order("created_at DESC").Find(&items).Error; err != nil {
+	userID := authenticatedUserID(c)
+	if err := s.db.Where("user_id = ?", userID).Order("created_at DESC").Find(&items).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_list_savings_goals", err)
 		return
 	}
@@ -552,6 +655,7 @@ func (s *Server) createSavingsGoal(c *gin.Context) {
 		return
 	}
 	item := models.SavingsGoal{
+		UserID:       authenticatedUserID(c),
 		ID:           stringValue(payload.ID),
 		Name:         payload.Name,
 		TargetAmount: payload.TargetAmount,
@@ -569,7 +673,7 @@ func (s *Server) createSavingsGoal(c *gin.Context) {
 		s.respondError(c, http.StatusBadRequest, "failed_to_create_savings_goal", err)
 		return
 	}
-	if err := s.db.First(&item, "id = ?", item.ID).Error; err != nil {
+	if err := s.db.First(&item, "id = ? AND user_id = ?", item.ID, item.UserID).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_load_savings_goal", err)
 		return
 	}
@@ -578,7 +682,8 @@ func (s *Server) createSavingsGoal(c *gin.Context) {
 
 func (s *Server) updateSavingsGoal(c *gin.Context) {
 	var item models.SavingsGoal
-	if err := s.db.First(&item, "id = ?", c.Param("id")).Error; err != nil {
+	userID := authenticatedUserID(c)
+	if err := s.db.First(&item, "id = ? AND user_id = ?", c.Param("id"), userID).Error; err != nil {
 		s.respondError(c, http.StatusNotFound, "savings_goal_not_found", err)
 		return
 	}
@@ -601,7 +706,7 @@ func (s *Server) updateSavingsGoal(c *gin.Context) {
 		s.respondError(c, http.StatusBadRequest, "failed_to_update_savings_goal", err)
 		return
 	}
-	if err := s.db.First(&item, "id = ?", item.ID).Error; err != nil {
+	if err := s.db.First(&item, "id = ? AND user_id = ?", item.ID, userID).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_load_savings_goal", err)
 		return
 	}
@@ -609,7 +714,8 @@ func (s *Server) updateSavingsGoal(c *gin.Context) {
 }
 
 func (s *Server) deleteSavingsGoal(c *gin.Context) {
-	if err := s.db.Delete(&models.SavingsGoal{}, "id = ?", c.Param("id")).Error; err != nil {
+	userID := authenticatedUserID(c)
+	if err := s.db.Delete(&models.SavingsGoal{}, "id = ? AND user_id = ?", c.Param("id"), userID).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_delete_savings_goal", err)
 		return
 	}
@@ -635,7 +741,8 @@ type subscriptionPayload struct {
 
 func (s *Server) listSubscriptions(c *gin.Context) {
 	var items []models.SubscriptionRecord
-	if err := s.db.Order("updated_at DESC").Find(&items).Error; err != nil {
+	userID := authenticatedUserID(c)
+	if err := s.db.Where("user_id = ?", userID).Order("updated_at DESC").Find(&items).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_list_subscriptions", err)
 		return
 	}
@@ -648,6 +755,7 @@ func (s *Server) createSubscription(c *gin.Context) {
 		return
 	}
 	item := models.SubscriptionRecord{
+		UserID:                   authenticatedUserID(c),
 		ID:                       stringValue(payload.ID),
 		MerchantKey:              payload.MerchantKey,
 		DisplayName:              payload.DisplayName,
@@ -671,7 +779,7 @@ func (s *Server) createSubscription(c *gin.Context) {
 		s.respondError(c, http.StatusBadRequest, "failed_to_create_subscription", err)
 		return
 	}
-	if err := s.db.First(&item, "id = ?", item.ID).Error; err != nil {
+	if err := s.db.First(&item, "id = ? AND user_id = ?", item.ID, item.UserID).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_load_subscription", err)
 		return
 	}
@@ -680,7 +788,8 @@ func (s *Server) createSubscription(c *gin.Context) {
 
 func (s *Server) updateSubscription(c *gin.Context) {
 	var item models.SubscriptionRecord
-	if err := s.db.First(&item, "id = ?", c.Param("id")).Error; err != nil {
+	userID := authenticatedUserID(c)
+	if err := s.db.First(&item, "id = ? AND user_id = ?", c.Param("id"), userID).Error; err != nil {
 		s.respondError(c, http.StatusNotFound, "subscription_not_found", err)
 		return
 	}
@@ -709,7 +818,7 @@ func (s *Server) updateSubscription(c *gin.Context) {
 		s.respondError(c, http.StatusBadRequest, "failed_to_update_subscription", err)
 		return
 	}
-	if err := s.db.First(&item, "id = ?", item.ID).Error; err != nil {
+	if err := s.db.First(&item, "id = ? AND user_id = ?", item.ID, userID).Error; err != nil {
 		s.respondError(c, http.StatusInternalServerError, "failed_to_load_subscription", err)
 		return
 	}
@@ -717,11 +826,35 @@ func (s *Server) updateSubscription(c *gin.Context) {
 }
 
 func (s *Server) deleteSubscription(c *gin.Context) {
-	if err := s.db.Delete(&models.SubscriptionRecord{}, "id = ?", c.Param("id")).Error; err != nil {
+	userID := authenticatedUserID(c)
+	if err := s.db.Delete(&models.SubscriptionRecord{}, "id = ? AND user_id = ?", c.Param("id"), userID).Error; err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_delete_subscription", err)
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+func (s *Server) validatedCategoryID(c *gin.Context, userID string, rawValue *string) (*string, bool) {
+	if rawValue == nil {
+		return nil, true
+	}
+
+	categoryID := strings.TrimSpace(*rawValue)
+	if categoryID == "" {
+		return nil, true
+	}
+
+	var category models.Category
+	if err := s.db.Select("id").First(&category, "id = ? AND user_id = ?", categoryID, userID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "category_not_found", "message": "category_id must belong to the authenticated user"})
+			return nil, false
+		}
+		s.respondError(c, http.StatusInternalServerError, "failed_to_validate_category", err)
+		return nil, false
+	}
+
+	return &categoryID, true
 }
 
 func (s *Server) respondError(c *gin.Context, status int, code string, err error) {
