@@ -281,8 +281,33 @@ func (s *Server) createPreference(c *gin.Context) {
 		CreatedAt:              timeValue(payload.CreatedAt, time.Now()),
 		UpdatedAt:              timeValue(payload.UpdatedAt, time.Now()),
 	}
-	if err := s.requestDB(c).Create(&item).Error; err != nil {
-		s.respondError(c, http.StatusBadRequest, "failed_to_create_preference", err)
+	result := s.requestDB(c).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "id"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"currency_code",
+			"month_start_day",
+			"is_ai_summaries_enabled",
+			"appearance_raw",
+			"language_raw",
+			"home_summary_range_raw",
+			"home_selected_date",
+			"home_range_start_date",
+			"home_range_end_date",
+			"budget_warning_threshold",
+			"seed_scenario_raw",
+			"created_at",
+			"updated_at",
+		}),
+		Where: clause.Where{Exprs: []clause.Expression{
+			clause.Expr{SQL: "app_preferences.user_id = ?", Vars: []any{item.UserID}},
+		}},
+	}).Create(&item)
+	if result.Error != nil {
+		s.respondError(c, http.StatusBadRequest, "failed_to_create_preference", result.Error)
+		return
+	}
+	if result.RowsAffected == 0 {
+		s.respondError(c, http.StatusConflict, "preference_id_conflict", fmt.Errorf("preference id already exists for another user"))
 		return
 	}
 	if err := s.overrideTimestamps(c, &item, payload.CreatedAt, payload.UpdatedAt); err != nil {
