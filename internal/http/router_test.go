@@ -219,6 +219,57 @@ func TestCreatePreferenceAndSubscriptionWithProvidedIDs(t *testing.T) {
 	}
 }
 
+func TestSnapshotBackupCreateListRestoreAndDelete(t *testing.T) {
+	router := testRouter(t, false)
+
+	createBody := bytes.NewBufferString(`{"payload_version":1,"encrypted_payload":"encrypted-json-payload"}`)
+	createReq := authedRequest(http.MethodPost, "/api/v1/snapshots", createBody)
+	createRes := httptest.NewRecorder()
+	router.ServeHTTP(createRes, createReq)
+	if createRes.Code != http.StatusCreated {
+		t.Fatalf("expected snapshot create 201, got %d: %s", createRes.Code, createRes.Body.String())
+	}
+
+	var created map[string]any
+	if err := json.Unmarshal(createRes.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	restoreCode, ok := created["restore_code"].(string)
+	if !ok || !strings.HasPrefix(restoreCode, "MONEE-") {
+		t.Fatalf("expected restore code in create response, got %s", createRes.Body.String())
+	}
+	if strings.Contains(createRes.Body.String(), "encrypted-json-payload") {
+		t.Fatalf("create response should not include encrypted payload: %s", createRes.Body.String())
+	}
+
+	listReq := authedRequest(http.MethodGet, "/api/v1/snapshots", nil)
+	listRes := httptest.NewRecorder()
+	router.ServeHTTP(listRes, listReq)
+	if listRes.Code != http.StatusOK {
+		t.Fatalf("expected snapshot list 200, got %d: %s", listRes.Code, listRes.Body.String())
+	}
+	if strings.Contains(listRes.Body.String(), "encrypted-json-payload") {
+		t.Fatalf("list response should not include encrypted payload: %s", listRes.Body.String())
+	}
+
+	restoreReq := authedRequestFor("user-b-token", http.MethodGet, "/api/v1/snapshots/"+strings.ReplaceAll(strings.ToLower(restoreCode), "-", ""), nil)
+	restoreRes := httptest.NewRecorder()
+	router.ServeHTTP(restoreRes, restoreReq)
+	if restoreRes.Code != http.StatusOK {
+		t.Fatalf("expected snapshot restore 200, got %d: %s", restoreRes.Code, restoreRes.Body.String())
+	}
+	if !strings.Contains(restoreRes.Body.String(), "encrypted-json-payload") {
+		t.Fatalf("restore response should include encrypted payload: %s", restoreRes.Body.String())
+	}
+
+	deleteReq := authedRequest(http.MethodDelete, "/api/v1/snapshots/"+created["id"].(string), nil)
+	deleteRes := httptest.NewRecorder()
+	router.ServeHTTP(deleteRes, deleteReq)
+	if deleteRes.Code != http.StatusNoContent {
+		t.Fatalf("expected snapshot delete 204, got %d: %s", deleteRes.Code, deleteRes.Body.String())
+	}
+}
+
 func TestCreatePreferenceWithExistingIDUpdatesForSameUser(t *testing.T) {
 	router := testRouter(t, false)
 

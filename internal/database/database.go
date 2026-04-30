@@ -58,6 +58,7 @@ func Migrate(db *gorm.DB) error {
 		&models.SavingsGoal{},
 		&models.SubscriptionRecord{},
 		&models.AppPreference{},
+		&models.SnapshotBackup{},
 	); err != nil {
 		return err
 	}

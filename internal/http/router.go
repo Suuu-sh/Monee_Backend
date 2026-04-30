@@ -1,6 +1,8 @@
 package http
 
 import (
+	"crypto/rand"
+	"encoding/base32"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -27,7 +29,7 @@ type Server struct {
 }
 
 func NewRouter(cfg config.Config, db *gorm.DB, logger *slog.Logger) *gin.Engine {
-	return NewRouterWithAuthenticator(cfg, db, logger, NewSupabaseAuthenticator(cfg, logger))
+	return NewRouterWithAuthenticator(cfg, db, logger, NewAuthenticator(cfg))
 }
 
 func NewRouterWithAuthenticator(cfg config.Config, db *gorm.DB, logger *slog.Logger, authenticator Authenticator) *gin.Engine {
@@ -91,6 +93,11 @@ func NewRouterWithAuthenticator(cfg config.Config, db *gorm.DB, logger *slog.Log
 		api.POST("/subscriptions", server.createSubscription)
 		api.PUT("/subscriptions/:id", server.updateSubscription)
 		api.DELETE("/subscriptions/:id", server.deleteSubscription)
+
+		api.GET("/snapshots", server.listSnapshotBackups)
+		api.POST("/snapshots", server.createSnapshotBackup)
+		api.GET("/snapshots/:restore_code", server.getSnapshotBackup)
+		api.DELETE("/snapshots/:id", server.deleteSnapshotBackup)
 	}
 
 	return router
@@ -123,7 +130,7 @@ func (s *Server) requireAuth(c *gin.Context) {
 	token = strings.TrimSpace(token)
 
 	if s.authenticator == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "auth_not_configured", "message": "Supabase authentication is not configured"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "auth_not_configured", "message": "Backend authentication is not configured"})
 		c.Abort()
 		return
 	}
@@ -373,6 +380,128 @@ func (s *Server) deletePreference(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+type snapshotBackupPayload struct {
+	PayloadVersion   int    `json:"payload_version"`
+	EncryptedPayload string `json:"encrypted_payload" binding:"required"`
+}
+
+func (s *Server) listSnapshotBackups(c *gin.Context) {
+	var items []models.SnapshotBackup
+	userID := authenticatedUserID(c)
+	if err := s.requestDB(c).
+		Select("id", "user_id", "restore_code", "payload_version", "created_at", "expires_at").
+		Where("user_id = ?", userID).
+		Order("created_at DESC").
+		Find(&items).Error; err != nil {
+		s.respondError(c, http.StatusInternalServerError, "failed_to_list_snapshots", err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+func (s *Server) createSnapshotBackup(c *gin.Context) {
+	var payload snapshotBackupPayload
+	if !bindJSON(c, &payload) {
+		return
+	}
+	if len(payload.EncryptedPayload) > 5*1024*1024 {
+		s.respondError(c, http.StatusRequestEntityTooLarge, "snapshot_too_large", fmt.Errorf("snapshot payload must be 5MB or less"))
+		return
+	}
+
+	version := payload.PayloadVersion
+	if version <= 0 {
+		version = 1
+	}
+
+	item := models.SnapshotBackup{
+		UserID:           authenticatedUserID(c),
+		PayloadVersion:   version,
+		EncryptedPayload: payload.EncryptedPayload,
+		ExpiresAt:        time.Now().Add(90 * 24 * time.Hour),
+	}
+
+	for attempts := 0; attempts < 5; attempts++ {
+		restoreCode, err := generateRestoreCode()
+		if err != nil {
+			s.respondError(c, http.StatusInternalServerError, "failed_to_generate_restore_code", err)
+			return
+		}
+		item.RestoreCode = restoreCode
+		if err := s.requestDB(c).Create(&item).Error; err != nil {
+			if attempts < 4 && strings.Contains(strings.ToLower(err.Error()), "unique") {
+				continue
+			}
+			s.respondError(c, http.StatusBadRequest, "failed_to_create_snapshot", err)
+			return
+		}
+		c.JSON(http.StatusCreated, snapshotBackupMetadata(item))
+		return
+	}
+
+	s.respondError(c, http.StatusInternalServerError, "failed_to_create_snapshot", fmt.Errorf("restore code collision"))
+}
+
+func (s *Server) getSnapshotBackup(c *gin.Context) {
+	restoreCode := normalizeRestoreCode(c.Param("restore_code"))
+	if restoreCode == "" {
+		s.respondError(c, http.StatusBadRequest, "invalid_restore_code", fmt.Errorf("restore code is required"))
+		return
+	}
+
+	var item models.SnapshotBackup
+	if err := s.requestDB(c).First(&item, "restore_code = ? AND expires_at > ?", restoreCode, time.Now()).Error; err != nil {
+		s.respondError(c, http.StatusNotFound, "snapshot_not_found", err)
+		return
+	}
+	c.JSON(http.StatusOK, item)
+}
+
+func (s *Server) deleteSnapshotBackup(c *gin.Context) {
+	userID := authenticatedUserID(c)
+	if err := s.requestDB(c).Delete(&models.SnapshotBackup{}, "id = ? AND user_id = ?", c.Param("id"), userID).Error; err != nil {
+		s.respondError(c, http.StatusBadRequest, "failed_to_delete_snapshot", err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func snapshotBackupMetadata(item models.SnapshotBackup) gin.H {
+	return gin.H{
+		"id":              item.ID,
+		"restore_code":    item.RestoreCode,
+		"payload_version": item.PayloadVersion,
+		"created_at":      item.CreatedAt,
+		"expires_at":      item.ExpiresAt,
+	}
+}
+
+func generateRestoreCode() (string, error) {
+	bytes := make([]byte, 13)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	encoded := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(bytes)
+	encoded = strings.TrimRight(encoded, "=")
+	if len(encoded) > 20 {
+		encoded = encoded[:20]
+	}
+	return "MONEE-" + encoded[0:4] + "-" + encoded[4:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20], nil
+}
+
+func normalizeRestoreCode(raw string) string {
+	raw = strings.ToUpper(strings.TrimSpace(raw))
+	raw = strings.ReplaceAll(raw, " ", "")
+	raw = strings.ReplaceAll(raw, "-", "")
+	if strings.HasPrefix(raw, "MONEE") {
+		raw = strings.TrimPrefix(raw, "MONEE")
+	}
+	if len(raw) != 20 {
+		return ""
+	}
+	return "MONEE-" + raw[0:4] + "-" + raw[4:8] + "-" + raw[8:12] + "-" + raw[12:16] + "-" + raw[16:20]
 }
 
 type categoryPayload struct {

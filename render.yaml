@@ -14,9 +14,7 @@ services:
         value: postgres
       - key: DATABASE_URL
         sync: false
-      - key: SUPABASE_PROJECT_URL
-        value: https://azvfsidxfxjnxatjbljm.supabase.co
-      - key: SUPABASE_PUBLISHABLE_KEY
-        value: sb_publishable_9ou0ZIPni61hlNk6FEklLQ_dcyZK279
+      - key: AUTH_MODE
+        value: guest
       - key: SEED_DEFAULT_CATEGORIES
         value: "true"
