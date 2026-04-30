@@ -99,6 +99,16 @@ type AppPreference struct {
 	UpdatedAt              time.Time  `json:"updated_at"`
 }
 
+type SnapshotBackup struct {
+	ID               string    `gorm:"primaryKey" json:"id"`
+	UserID           string    `gorm:"index" json:"-"`
+	RestoreCode      string    `gorm:"not null;uniqueIndex" json:"restore_code"`
+	PayloadVersion   int       `gorm:"not null;default:1" json:"payload_version"`
+	EncryptedPayload string    `gorm:"type:text;not null" json:"encrypted_payload,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	ExpiresAt        time.Time `gorm:"index" json:"expires_at"`
+}
+
 type Summary struct {
 	Range            string        `json:"range"`
 	StartDate        *time.Time    `json:"start_date,omitempty"`
@@ -132,6 +142,10 @@ func (s *SubscriptionRecord) BeforeCreate(_ *gorm.DB) error {
 
 func (p *AppPreference) BeforeCreate(_ *gorm.DB) error {
 	return ensureID(&p.ID)
+}
+
+func (s *SnapshotBackup) BeforeCreate(_ *gorm.DB) error {
+	return ensureID(&s.ID)
 }
 
 func ensureID(id *string) error {
