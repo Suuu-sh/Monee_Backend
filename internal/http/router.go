@@ -307,8 +307,11 @@ func (s *Server) createPreference(c *gin.Context) {
 		return
 	}
 	if result.RowsAffected == 0 {
-		s.respondError(c, http.StatusConflict, "preference_id_conflict", fmt.Errorf("preference id already exists for another user"))
-		return
+		item.ID = ""
+		if err := s.requestDB(c).Create(&item).Error; err != nil {
+			s.respondError(c, http.StatusBadRequest, "failed_to_create_preference", err)
+			return
+		}
 	}
 	if err := s.overrideTimestamps(c, &item, payload.CreatedAt, payload.UpdatedAt); err != nil {
 		s.respondError(c, http.StatusBadRequest, "failed_to_create_preference", err)

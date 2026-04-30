@@ -262,7 +262,7 @@ func TestCreatePreferenceWithExistingIDUpdatesForSameUser(t *testing.T) {
 	}
 }
 
-func TestCreatePreferenceWithExistingIDDoesNotOverwriteAnotherUser(t *testing.T) {
+func TestCreatePreferenceWithExistingIDCreatesNewPreferenceForAnotherUser(t *testing.T) {
 	router := testRouter(t, false)
 
 	preferenceID := "22222222-2222-2222-2222-222222222222"
@@ -278,8 +278,18 @@ func TestCreatePreferenceWithExistingIDDoesNotOverwriteAnotherUser(t *testing.T)
 	userBReq := authedRequestFor("user-b-token", http.MethodPost, "/api/v1/preferences", userBBody)
 	userBRes := httptest.NewRecorder()
 	router.ServeHTTP(userBRes, userBReq)
-	if userBRes.Code != http.StatusConflict {
-		t.Fatalf("expected user B duplicate preference create 409, got %d: %s", userBRes.Code, userBRes.Body.String())
+	if userBRes.Code != http.StatusCreated {
+		t.Fatalf("expected user B duplicate preference create 201 with a new ID, got %d: %s", userBRes.Code, userBRes.Body.String())
+	}
+	var userBPreference map[string]any
+	if err := json.Unmarshal(userBRes.Body.Bytes(), &userBPreference); err != nil {
+		t.Fatalf("decode user B preference: %v", err)
+	}
+	if userBPreference["id"] == preferenceID {
+		t.Fatalf("expected user B preference to get a new ID, got %s", userBRes.Body.String())
+	}
+	if userBPreference["currency_code"] != "USD" {
+		t.Fatalf("expected user B preference to use submitted fields, got %s", userBRes.Body.String())
 	}
 
 	listReq := authedRequestFor("user-a-token", http.MethodGet, "/api/v1/preferences", nil)
@@ -290,5 +300,15 @@ func TestCreatePreferenceWithExistingIDDoesNotOverwriteAnotherUser(t *testing.T)
 	}
 	if strings.Contains(listRes.Body.String(), `"currency_code":"USD"`) {
 		t.Fatalf("user B duplicate POST overwrote user A preference: %s", listRes.Body.String())
+	}
+
+	userBListReq := authedRequestFor("user-b-token", http.MethodGet, "/api/v1/preferences", nil)
+	userBListRes := httptest.NewRecorder()
+	router.ServeHTTP(userBListRes, userBListReq)
+	if userBListRes.Code != http.StatusOK {
+		t.Fatalf("expected user B preference list 200, got %d: %s", userBListRes.Code, userBListRes.Body.String())
+	}
+	if !strings.Contains(userBListRes.Body.String(), `"currency_code":"USD"`) {
+		t.Fatalf("user B list should include the newly created preference: %s", userBListRes.Body.String())
 	}
 }
