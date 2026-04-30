@@ -109,18 +109,13 @@ curl https://monee-backend-b8qo.onrender.com/readyz
 
 `/api/v1/*` は Supabase anonymous session の `Authorization: Bearer <access_token>` が必要です。
 
-### GitHub Actions から Render deploy する
+### GitHub Actions と Render deploy
 
-`.github/workflows/render-deploy.yml` は `/Users/yota/Projects/Shared` の reusable workflow (`Suuu-sh/Shared/.github/workflows/render-deploy.yml@main`) を呼び出します。PR / main push で `go test ./...` を実行し、`main` への push だけ Render deploy hook を呼びます。
+`.github/workflows/render-deploy.yml` は PR / main push / 手動実行で `go test ./...` だけを実行します。
 
-Render Dashboard の対象 service Settings で Deploy Hook URL を確認し、GitHub repository secret に保存してください。
-
-- secret name: `RENDER_DEPLOY_HOOK_URL`
-- value: Render の Deploy Hook URL
+Render への production deploy は Render service の Auto-Deploy に任せます。GitHub Actions から Render deploy hook は呼びません。main merge 時に Auto-Deploy と Deploy Hook が二重に走ることを避けるためです。
 
 Render service の deploy branch は `main` にしてください。
-
-Render 側の Auto-Deploy を有効にしたままにすると、main merge 時に Render 自動 deploy と GitHub Actions deploy hook の両方が動く可能性があります。GitHub Actions 経由に統一する場合は、Render service の Auto-Deploy を無効にしてください。
 
 ## Stop Fly.io deploys
 
