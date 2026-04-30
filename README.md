@@ -66,30 +66,29 @@ curl http://127.0.0.1:18080/api/v1/summary?range=month
 - Runtime は PostgreSQL を使い、テストだけ SQLite in-memory を使います
 - `SEED_DEFAULT_CATEGORIES=true` なら認証済みユーザーごとに初回カテゴリだけを自動投入します
 - 取引・予算・目標のモックデータは backend 側では投入しません
-- `/api/v1/*` は Supabase Auth の Bearer token を必須にし、データは Supabase user id ごとに分離します
+- `/api/v1/*` は Monee guest code の Bearer token を必須にし、データは guest code derived user id ごとに分離します
 - production deploy は `render.yaml` と Dockerfile を使います
 
-## Deploy to Render + existing Supabase
+## Deploy to Render + Neon
 
-Fly.io の常駐 app / Managed Postgres では料金が出やすいため、Go API だけ Render Free Web Service に移し、DB と Auth は既存 Supabase project を使います。
+Fly.io の常駐 app / Managed Postgres では料金が出やすいため、Go API だけ Render Free Web Service に移し、DB は Neon PostgreSQL、Auth はアプリ内で生成する Monee guest code を使います。
 
 構成:
 
 ```text
 iOS app
   -> Render Free Web Service / Go API
-  -> Supabase Postgres + Supabase Auth
+  -> Neon PostgreSQL + Monee guest code auth
 ```
 
 この repository には Render Blueprint 用の `render.yaml` を置いてあります。Render Dashboard で Blueprint を作成し、`Suuu-sh/Monee_Backend` を接続してください。
 
-Blueprint 作成時に `DATABASE_URL` を入力します。Supabase Dashboard の connection string を使い、Render からの接続では SSL を有効にしてください。
+Blueprint 作成時に `DATABASE_URL` を入力します。Neon Dashboard の pooled connection string を使い、Render からの接続では SSL を有効にしてください。
 
 推奨:
 
-- `DATABASE_URL`: Supabase pooler / session mode の connection string
-- `SUPABASE_PROJECT_URL`: `https://azvfsidxfxjnxatjbljm.supabase.co`
-- `SUPABASE_PUBLISHABLE_KEY`: app と同じ publishable key
+- `DATABASE_URL`: Neon pooled connection string (`sslmode=require`)
+- `AUTH_MODE`: `guest`
 - `DATABASE_DRIVER`: `postgres`
 - `SEED_DEFAULT_CATEGORIES`: `true`
 
@@ -98,7 +97,7 @@ Render Free の注意:
 - 15 分 idle で sleep し、次の request で起動します
 - sleep 中は Free instance hours を消費しません
 - 起動直後の request は cold start で遅くなることがあります
-- filesystem は ephemeral なので、production では SQLite を使わず Supabase Postgres を使います
+- filesystem は ephemeral なので、production では SQLite を使わず Neon PostgreSQL を使います
 
 確認:
 
@@ -107,7 +106,7 @@ curl https://monee-backend-b8qo.onrender.com/healthz
 curl https://monee-backend-b8qo.onrender.com/readyz
 ```
 
-`/api/v1/*` は Supabase anonymous session の `Authorization: Bearer <access_token>` が必要です。
+`/api/v1/*` は Mobile が生成・保存する Monee guest code の `Authorization: Bearer <guest_code>` が必要です。
 
 ### GitHub Actions から Render deploy する
 

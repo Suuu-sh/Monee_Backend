@@ -3,8 +3,8 @@ set -euo pipefail
 
 base_url="${1:-http://127.0.0.1:18080}"
 
-: "${SUPABASE_ACCESS_TOKEN:?Set SUPABASE_ACCESS_TOKEN to a Supabase user access token before running this smoke test.}"
-auth_headers=(-H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN")
+: "${MONEE_GUEST_TOKEN:=monee_guest_local_smoke_test_token}"
+auth_headers=(-H "Authorization: Bearer $MONEE_GUEST_TOKEN")
 
 echo "[1/4] health"
 curl -fsS "$base_url/healthz" | jq .

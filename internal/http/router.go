@@ -29,7 +29,7 @@ type Server struct {
 }
 
 func NewRouter(cfg config.Config, db *gorm.DB, logger *slog.Logger) *gin.Engine {
-	return NewRouterWithAuthenticator(cfg, db, logger, NewSupabaseAuthenticator(cfg, logger))
+	return NewRouterWithAuthenticator(cfg, db, logger, NewAuthenticator(cfg))
 }
 
 func NewRouterWithAuthenticator(cfg config.Config, db *gorm.DB, logger *slog.Logger, authenticator Authenticator) *gin.Engine {
@@ -130,7 +130,7 @@ func (s *Server) requireAuth(c *gin.Context) {
 	token = strings.TrimSpace(token)
 
 	if s.authenticator == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "auth_not_configured", "message": "Supabase authentication is not configured"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "auth_not_configured", "message": "Backend authentication is not configured"})
 		c.Abort()
 		return
 	}
