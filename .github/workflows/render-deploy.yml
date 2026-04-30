@@ -1,4 +1,4 @@
-name: Test and deploy to Render
+name: Test backend
 
 on:
   pull_request:
@@ -10,12 +10,15 @@ on:
   workflow_dispatch:
 
 jobs:
-  render:
-    name: Shared Render deploy workflow
-    uses: Suuu-sh/Shared/.github/workflows/render-deploy.yml@main
-    with:
-      go-version-file: go.mod
-      test-command: go test ./...
-      deploy-ref: refs/heads/main
-    secrets:
-      render_deploy_hook_url: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+  test:
+    name: Go tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Run tests
+        run: go test ./...

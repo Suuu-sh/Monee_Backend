@@ -269,3 +269,97 @@ func TestSnapshotBackupCreateListRestoreAndDelete(t *testing.T) {
 		t.Fatalf("expected snapshot delete 204, got %d: %s", deleteRes.Code, deleteRes.Body.String())
 	}
 }
+
+func TestCreatePreferenceWithExistingIDUpdatesForSameUser(t *testing.T) {
+	router := testRouter(t, false)
+
+	preferenceID := "22222222-2222-2222-2222-222222222222"
+	createBody := bytes.NewBufferString(`{"id":"` + preferenceID + `","currency_code":"JPY","month_start_day":1,"is_ai_summaries_enabled":true,"appearance_raw":"system","language_raw":"ja","home_summary_range_raw":"month","budget_warning_threshold":0.8,"seed_scenario_raw":"balanced","created_at":"2026-04-10T08:00:00Z","updated_at":"2026-04-10T08:00:00Z"}`)
+	createReq := authedRequest(http.MethodPost, "/api/v1/preferences", createBody)
+	createRes := httptest.NewRecorder()
+	router.ServeHTTP(createRes, createReq)
+	if createRes.Code != http.StatusCreated {
+		t.Fatalf("expected initial preference create 201, got %d: %s", createRes.Code, createRes.Body.String())
+	}
+
+	updateBody := bytes.NewBufferString(`{"id":"` + preferenceID + `","currency_code":"USD","month_start_day":15,"is_ai_summaries_enabled":false,"appearance_raw":"dark","language_raw":"en","home_summary_range_raw":"week","budget_warning_threshold":0.5,"seed_scenario_raw":"minimal","created_at":"2026-04-10T08:00:00Z","updated_at":"2026-04-11T09:00:00Z"}`)
+	updateReq := authedRequest(http.MethodPost, "/api/v1/preferences", updateBody)
+	updateRes := httptest.NewRecorder()
+	router.ServeHTTP(updateRes, updateReq)
+	if updateRes.Code != http.StatusCreated {
+		t.Fatalf("expected duplicate preference POST to upsert with 201, got %d: %s", updateRes.Code, updateRes.Body.String())
+	}
+
+	var preference map[string]any
+	if err := json.Unmarshal(updateRes.Body.Bytes(), &preference); err != nil {
+		t.Fatalf("decode updated preference: %v", err)
+	}
+	if preference["currency_code"] != "USD" || preference["appearance_raw"] != "dark" {
+		t.Fatalf("expected duplicate POST to return updated preference, got %s", updateRes.Body.String())
+	}
+
+	listReq := authedRequest(http.MethodGet, "/api/v1/preferences", nil)
+	listRes := httptest.NewRecorder()
+	router.ServeHTTP(listRes, listReq)
+	if listRes.Code != http.StatusOK {
+		t.Fatalf("expected preference list 200, got %d: %s", listRes.Code, listRes.Body.String())
+	}
+	var payload map[string][]map[string]any
+	if err := json.Unmarshal(listRes.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(payload["items"]) != 1 {
+		t.Fatalf("expected exactly one preference after upsert, got %s", listRes.Body.String())
+	}
+}
+
+func TestCreatePreferenceWithExistingIDCreatesNewPreferenceForAnotherUser(t *testing.T) {
+	router := testRouter(t, false)
+
+	preferenceID := "22222222-2222-2222-2222-222222222222"
+	userABody := bytes.NewBufferString(`{"id":"` + preferenceID + `","currency_code":"JPY","month_start_day":1,"is_ai_summaries_enabled":true,"appearance_raw":"system","language_raw":"ja","home_summary_range_raw":"month","budget_warning_threshold":0.8,"seed_scenario_raw":"balanced"}`)
+	userAReq := authedRequestFor("user-a-token", http.MethodPost, "/api/v1/preferences", userABody)
+	userARes := httptest.NewRecorder()
+	router.ServeHTTP(userARes, userAReq)
+	if userARes.Code != http.StatusCreated {
+		t.Fatalf("expected user A preference create 201, got %d: %s", userARes.Code, userARes.Body.String())
+	}
+
+	userBBody := bytes.NewBufferString(`{"id":"` + preferenceID + `","currency_code":"USD","month_start_day":15,"is_ai_summaries_enabled":false,"appearance_raw":"dark","language_raw":"en","home_summary_range_raw":"week","budget_warning_threshold":0.5,"seed_scenario_raw":"minimal"}`)
+	userBReq := authedRequestFor("user-b-token", http.MethodPost, "/api/v1/preferences", userBBody)
+	userBRes := httptest.NewRecorder()
+	router.ServeHTTP(userBRes, userBReq)
+	if userBRes.Code != http.StatusCreated {
+		t.Fatalf("expected user B duplicate preference create 201 with a new ID, got %d: %s", userBRes.Code, userBRes.Body.String())
+	}
+	var userBPreference map[string]any
+	if err := json.Unmarshal(userBRes.Body.Bytes(), &userBPreference); err != nil {
+		t.Fatalf("decode user B preference: %v", err)
+	}
+	if userBPreference["id"] == preferenceID {
+		t.Fatalf("expected user B preference to get a new ID, got %s", userBRes.Body.String())
+	}
+	if userBPreference["currency_code"] != "USD" {
+		t.Fatalf("expected user B preference to use submitted fields, got %s", userBRes.Body.String())
+	}
+
+	listReq := authedRequestFor("user-a-token", http.MethodGet, "/api/v1/preferences", nil)
+	listRes := httptest.NewRecorder()
+	router.ServeHTTP(listRes, listReq)
+	if listRes.Code != http.StatusOK {
+		t.Fatalf("expected user A preference list 200, got %d: %s", listRes.Code, listRes.Body.String())
+	}
+	if strings.Contains(listRes.Body.String(), `"currency_code":"USD"`) {
+		t.Fatalf("user B duplicate POST overwrote user A preference: %s", listRes.Body.String())
+	}
+
+	userBListReq := authedRequestFor("user-b-token", http.MethodGet, "/api/v1/preferences", nil)
+	userBListRes := httptest.NewRecorder()
+	router.ServeHTTP(userBListRes, userBListReq)
+	if userBListRes.Code != http.StatusOK {
+		t.Fatalf("expected user B preference list 200, got %d: %s", userBListRes.Code, userBListRes.Body.String())
+	}
+	if !strings.Contains(userBListRes.Body.String(), `"currency_code":"USD"`) {
+		t.Fatalf("user B list should include the newly created preference: %s", userBListRes.Body.String())
+	}
+}
